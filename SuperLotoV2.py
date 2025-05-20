@@ -43,7 +43,6 @@ if uploaded_file:
                     bonus += (pair_freq[pair] / freq[a] + pair_freq[pair] / freq[b]) / 2
             return bonus
 
-        all_numbers = list(range(1, 61))
         available_numbers = list(base_score.keys())
         scores = np.array([base_score[num] for num in available_numbers], dtype=float)
         prob = scores / scores.sum()
@@ -94,20 +93,23 @@ if uploaded_file:
                     best_candidate = candidate
             return best_candidate
 
-        # Yeniden üretmek için eski tahmini sil
-        if st.button("Yeniden Üret"):
-            st.session_state.pop('prediction', None)
-
-        if st.button("Tahmin Üret"):
-            prediction = generate_prediction()
-            if prediction:
-                st.session_state['prediction'] = prediction
+        if st.button("4 Tahmin Üret"):
+            predictions = []
+            tries = 0
+            while len(predictions) < 4 and tries < 100:
+                pred = generate_prediction()
+                if pred and pred not in predictions:
+                    predictions.append(pred)
+                tries += 1
+            if predictions:
+                st.session_state['predictions'] = predictions
             else:
-                st.session_state['prediction'] = None
+                st.session_state['predictions'] = None
 
-        if 'prediction' in st.session_state:
-            if st.session_state['prediction']:
-                st.success(f"Tahmin Edilen Sayılar: {', '.join(str(n) for n in st.session_state['prediction'])}")
+        if 'predictions' in st.session_state:
+            if st.session_state['predictions']:
+                for i, pred in enumerate(st.session_state['predictions'], 1):
+                    st.success(f"Tahmin {i}: {', '.join(str(n) for n in pred)}")
             else:
                 st.error("Uygun tahmin bulunamadı, lütfen tekrar deneyin.")
 
