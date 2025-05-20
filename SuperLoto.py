@@ -3,82 +3,74 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 from collections import Counter
-import random
 
 @st.cache_data(ttl=3600)
 def fetch_super_loto_results():
-    url = 'https://www.millipiyangoonline.com/super-loto/cekilis-sonuclari' 
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, 'html.parser')
-
-    table = soup.find('table')
-    if not table:
+    url = "https://www.millipiyangoonline.com/super-loto/cekilis-sonuclari"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    res = requests.get(url, headers=headers)
+    if res.status_code != 200:
+        st.error(f"Veri çekilemedi, status code: {res.status_code}")
         return None
+    
+    soup = BeautifulSoup(res.text, "html.parser")
+    # Tabloyu bul (ilk çekiliş sonuçları tablosu)
+    table = soup.find("table", class_="tbl-cekilis-sonuclari")
+    if not table:
+        st.error("Sonuç tablosu bulunamadı.")
+        return None
+    
+    # Tablo başlıklarını al
+    headers = [th.get_text(strip=True) for th in table.find("thead").find_all("th")]
 
-    headers = [th.text.strip() for th in table.find_all('th')]
+    # Satırları işle
     rows = []
-    for tr in table.find_all('tr')[1:]:
-        cols = [td.text.strip() for td in tr.find_all('td')]
-        if cols:
-            rows.append(cols)
+    for tr in table.find("tbody").find_all("tr"):
+        cells = [td.get_text(strip=True) for td in tr.find_all("td")]
+        rows.append(cells)
 
     df = pd.DataFrame(rows, columns=headers)
     return df
 
-def extract_numbers(df):
+def analyze_numbers(df):
+    # Süper Loto sayıları sütun adlarına göre değişir,
+    # Örnek olarak 'Çekiliş' ve 6 sayı sütunu varsayalım
+    number_columns = [col for col in df.columns if col.lower().startswith("sayı") or col.lower().startswith("numara")]
+    if not number_columns:
+        # Eğer sütun isimleri farklıysa elle belirle
+        number_columns = df.columns[1:]  # 1. sütun çekiliş no veya tarih olabilir
+
     all_numbers = []
-    if df is None:
-        return all_numbers
-    for index, row in df.iterrows():
-        # Çekiliş sonuçları genellikle 6 sayı olur
-        # Sütun isimleri farklı olabilir ama genellikle numaralar 2. veya 3. sütundan başlar
-        # Burada "Çekiliş Sonuçları" sütununda sayılar varsa kullanabiliriz
-        # Alternatif olarak sayıları ayıracağız
-        for col in df.columns:
-            if 'sonuç' in col.lower() or 'numara' in col.lower():
-                numbers_str = row[col]
-                # Sayıları ayır, boşluk ve - işaretine göre
-                numbers = [int(n) for n in numbers_str.replace('-', ' ').split() if n.isdigit()]
-                all_numbers.extend(numbers)
-                break
-    return all_numbers
+    for _, row in df.iterrows():
+        for col in number_columns:
+            try:
+                num = int(row[col])
+                all_numbers.append(num)
+            except:
+                continue
+    counts = Counter(all_numbers)
+    most_common = counts.most_common(10)
+    return most_common
 
 def main():
-    st.title("Milli Piyango Süper Loto Sonuçları ve Tahmin Botu")
-
-    st.markdown("Milli Piyango Süper Loto geçmiş çekiliş sonuçlarını çekip gösterir ve basit analiz yapar.")
+    st.title("Süper Loto Otomatik Veri Çekme ve Tahmin")
 
     df = fetch_super_loto_results()
+    if df is None:
+        st.stop()
 
-    if df is None or df.empty:
-        st.error("Çekiliş sonuçları bulunamadı. Lütfen daha sonra tekrar deneyin.")
-        return
-
-    st.subheader("Geçmiş Süper Loto Çekiliş Sonuçları")
+    st.subheader("Çekiliş Sonuçları")
     st.dataframe(df)
 
-    numbers = extract_numbers(df)
-    if not numbers:
-        st.warning("Çekiliş sonuçlarından sayı bilgisi çıkarılamadı.")
-        return
-
-    counts = Counter(numbers)
-    most_common = counts.most_common(10)
-
     st.subheader("En Çok Çıkan Sayılar")
-    most_common_df = pd.DataFrame(most_common, columns=['Sayı', 'Çıkış Sayısı'])
-    st.table(most_common_df)
-
-    st.subheader("Tahmin Önerisi")
-    # En çok çıkan sayılar arasından rastgele 6 sayı seçelim
-    top_numbers = [num for num, count in most_common]
-    if len(top_numbers) < 6:
-        st.warning("Yeterli sayı bilgisi yok, tahmin yapılamıyor.")
-        return
-
-    tahmin = sorted(random.sample(top_numbers, 6))
-    st.write("Bu çekiliş için tahmin ettiğimiz sayılar:")
-    st.write(tahmin)
+    most_common = analyze_numbers(df)
+    if most_common:
+        result_df = pd.DataFrame(most_common, columns=["Sayı", "Çıkış Sayısı"])
+        st.table(result_df)
+    else:
+        st.info("Sayı analizi için uygun veri bulunamadı.")
 
 if __name__ == "__main__":
     main()
