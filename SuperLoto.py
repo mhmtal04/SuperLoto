@@ -10,16 +10,14 @@ try:
         html_content = file.read()
 
     soup = BeautifulSoup(html_content, "html.parser")
-    # Çekiliş kartlarını bul
     draw_cards = soup.find_all("div", class_="draw-result-card")
-    st.write(f"Bulunan çekiliş sayısı: {len(draw_cards)}")  # debug
+    st.write(f"Bulunan çekiliş sayısı: {len(draw_cards)}")
 
     veriler = []
 
     for card in draw_cards:
         sayilar = []
-        # Her sayının span'ını bul
-        spans = card.find_all("span", class_="number")
+        spans = card.find_all("span", class_=lambda x: x and "number" in x.split())
         for span in spans:
             try:
                 sayi = int(span.text.strip())
