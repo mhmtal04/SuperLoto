@@ -10,14 +10,17 @@ try:
         html_content = file.read()
 
     soup = BeautifulSoup(html_content, "html.parser")
+    # Çekiliş kartlarını bul
     draw_cards = soup.find_all("div", class_="draw-result-card")
-    st.write("Bulunan çekiliş kartı sayısı:", len(draw_cards))  # DEBUG
+    st.write(f"Bulunan çekiliş sayısı: {len(draw_cards)}")  # debug
 
     veriler = []
 
     for card in draw_cards:
         sayilar = []
-        for span in card.find_all("span", class_="number"):
+        # Her sayının span'ını bul
+        spans = card.find_all("span", class_="number")
+        for span in spans:
             try:
                 sayi = int(span.text.strip())
                 sayilar.append(sayi)
@@ -41,6 +44,6 @@ try:
             st.dataframe(dict(sayi_sayaci.most_common()))
 
 except FileNotFoundError:
-    st.error("HTML dosyası bulunamadı. Lütfen bu dizine 'superloto.html' adında HTML dosyasını ekleyin.")
+    st.error("HTML dosyası bulunamadı. 'superloto.html' dosyasını ekleyin.")
 except Exception as e:
     st.error(f"Bir hata oluştu: {str(e)}")
