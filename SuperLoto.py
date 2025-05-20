@@ -1,36 +1,44 @@
 import streamlit as st
-import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 import pandas as pd
 import numpy as np
 
-st.title("Süper Loto Analiz ve Tahmin Botu - Milli Piyango")
+st.title("Süper Loto Tahmin Botu (Milli Piyango - Selenium)")
 
 @st.cache_data
-def fetch_data():
-    url = "https://www.millipiyango.gov.tr/cekilisler/super-loto-sonuclari"
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, "html.parser")
+def fetch_super_loto_data():
+    options = Options()
+    options.add_argument('--headless')  # Tarayıcıyı görünmez çalıştırır
+    options.add_argument('--disable-gpu')
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
-    numbers = []
-    # Milli Piyango sitesinde çekiliş sonuçlarını içeren tablo yapısını inceleyelim
-    # Örneğin, çekiliş sonuçları 'table' etiketi içinde ve her satır 'tr' ile olabilir
-    for row in soup.select("table tbody tr"):
-        row_numbers = []
-        for cell in row.select("td"):
+    url = "https://www.millipiyangoonline.com/super-loto/sonuclar"
+    driver.get(url)
+    driver.implicitly_wait(5)  # Sayfanın yüklenmesi için biraz bekle
+
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+    driver.quit()
+
+    # Çekilişleri bulalım
+    results = []
+    for draw in soup.select(".list-number"):
+        nums = draw.get_text(strip=True).replace('–', '').split()
+        if len(nums) >= 6:
             try:
-                num = int(cell.text.strip())
-                row_numbers.append(num)
+                results.append([int(n) for n in nums[:6]])
             except:
                 continue
-        if len(row_numbers) == 6:
-            numbers.append(row_numbers)
-    return pd.DataFrame(numbers, columns=[f"Sayı{i}" for i in range(1,7)])
 
-df = fetch_data()
+    return pd.DataFrame(results, columns=[f"Sayı{i+1}" for i in range(6)])
+
+df = fetch_super_loto_data()
 
 if df.empty:
-    st.error("Veri alınamadı veya site yapısı değişmiş olabilir.")
+    st.error("Veriler alınamadı. Site yapısı değişmiş olabilir.")
 else:
     all_numbers = df.values.flatten()
     freq = pd.Series(all_numbers).value_counts().sort_index()
@@ -40,11 +48,10 @@ else:
 
     weights = freq / freq.sum()
 
-    st.subheader("Tahmin Üret")
-
-    def weighted_random_choice(weights, n=6):
+    def weighted_choice(weights, n=6):
         return np.random.choice(weights.index, size=n, replace=False, p=weights.values)
 
+    st.subheader("Tahmin Üret")
     if st.button("Tahmin Üret"):
-        tahmin = weighted_random_choice(weights)
+        tahmin = weighted_choice(weights)
         st.write("Tahmin edilen sayılar:", sorted(tahmin))
