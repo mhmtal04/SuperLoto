@@ -1,44 +1,37 @@
 import streamlit as st
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
+import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import numpy as np
 
-st.title("Süper Loto Tahmin Botu (Milli Piyango - Selenium)")
+st.title("Süper Loto Tahmin Botu (Mobil Uyumlu)")
 
 @st.cache_data
-def fetch_super_loto_data():
-    options = Options()
-    options.add_argument('--headless')  # Tarayıcıyı görünmez çalıştırır
-    options.add_argument('--disable-gpu')
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+def fetch_milliyet_results():
+    url = "https://www.milliyet.com.tr/super-loto-sonuclari"
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+    response = requests.get(url, headers=headers)
+    soup = BeautifulSoup(response.text, "html.parser")
 
-    url = "https://www.millipiyangoonline.com/super-loto/sonuclar"
-    driver.get(url)
-    driver.implicitly_wait(5)  # Sayfanın yüklenmesi için biraz bekle
+    draw_data = []
 
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    driver.quit()
+    for result in soup.select("ul.loto-number"):
+        numbers = result.get_text(strip=True).split()
+        try:
+            nums = [int(n) for n in numbers if n.isdigit()]
+            if len(nums) == 6:
+                draw_data.append(nums)
+        except:
+            continue
 
-    # Çekilişleri bulalım
-    results = []
-    for draw in soup.select(".list-number"):
-        nums = draw.get_text(strip=True).replace('–', '').split()
-        if len(nums) >= 6:
-            try:
-                results.append([int(n) for n in nums[:6]])
-            except:
-                continue
+    return pd.DataFrame(draw_data, columns=[f"Sayı{i+1}" for i in range(6)])
 
-    return pd.DataFrame(results, columns=[f"Sayı{i+1}" for i in range(6)])
-
-df = fetch_super_loto_data()
+df = fetch_milliyet_results()
 
 if df.empty:
-    st.error("Veriler alınamadı. Site yapısı değişmiş olabilir.")
+    st.error("Sonuçlar alınamadı. Site yapısı değişmiş olabilir.")
 else:
     all_numbers = df.values.flatten()
     freq = pd.Series(all_numbers).value_counts().sort_index()
@@ -54,4 +47,4 @@ else:
     st.subheader("Tahmin Üret")
     if st.button("Tahmin Üret"):
         tahmin = weighted_choice(weights)
-        st.write("Tahmin edilen sayılar:", sorted(tahmin))
+        st.success("Tahmin edilen sayılar: " + ", ".join(map(str, sorted(tahmin))))
