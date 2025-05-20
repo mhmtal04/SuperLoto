@@ -1,50 +1,39 @@
-import streamlit as st
-import requests
 from bs4 import BeautifulSoup
-import pandas as pd
-import numpy as np
+from collections import Counter
 
-st.title("Süper Loto Tahmin Botu (Mobil Uyumlu)")
+# HTML dosyasını oku
+with open("superloto.html", "r", encoding="utf-8") as file:
+    html = file.read()
 
-@st.cache_data
-def fetch_milliyet_results():
-    url = "https://www.milliyet.com.tr/super-loto-sonuclari"
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-    response = requests.get(url, headers=headers)
-    soup = BeautifulSoup(response.text, "html.parser")
+# BeautifulSoup ile ayrıştır
+soup = BeautifulSoup(html, "html.parser")
 
-    draw_data = []
+# Çekiliş kartlarını bul (sınıf isimleri HTML’e göre düzenlenebilir)
+draw_cards = soup.find_all("div", class_="draw-result-card")
 
-    for result in soup.select("ul.loto-number"):
-        numbers = result.get_text(strip=True).split()
-        try:
-            nums = [int(n) for n in numbers if n.isdigit()]
-            if len(nums) == 6:
-                draw_data.append(nums)
-        except:
-            continue
+# Geçmiş çekiliş sayıları burada toplanacak
+veriler = []
 
-    return pd.DataFrame(draw_data, columns=[f"Sayı{i+1}" for i in range(6)])
+for card in draw_cards:
+    # Sayı toplama
+    sayilar = [int(span.text.strip()) for span in card.find_all("span", class_="number")]
+    
+    if len(sayilar) == 6:
+        veriler.append(sayilar)
 
-df = fetch_milliyet_results()
+# Eğer veri alınamadıysa uyarı ver
+if not veriler:
+    print("Veri alınamadı. HTML sınıf adları değişmiş olabilir.")
+    exit()
 
-if df.empty:
-    st.error("Sonuçlar alınamadı. Site yapısı değişmiş olabilir.")
-else:
-    all_numbers = df.values.flatten()
-    freq = pd.Series(all_numbers).value_counts().sort_index()
+# Tüm sayıları tek listede topla
+tum_sayilar = [sayi for cekilis in veriler for sayi in cekilis]
 
-    st.subheader("En Çok Çıkan Sayılar")
-    st.bar_chart(freq)
+# En sık çıkan 6 sayıyı bul
+sayi_sayaci = Counter(tum_sayilar)
+tahmin = sayi_sayaci.most_common(6)
 
-    weights = freq / freq.sum()
-
-    def weighted_choice(weights, n=6):
-        return np.random.choice(weights.index, size=n, replace=False, p=weights.values)
-
-    st.subheader("Tahmin Üret")
-    if st.button("Tahmin Üret"):
-        tahmin = weighted_choice(weights)
-        st.success("Tahmin edilen sayılar: " + ", ".join(map(str, sorted(tahmin))))
+# Sonuçları yazdır
+print("Toplam Çekiliş Sayısı:", len(veriler))
+print("Tahmin Edilen Sayılar (En Çok Çıkan 6 Sayı):")
+print([sayi for sayi, adet in tahmin])
