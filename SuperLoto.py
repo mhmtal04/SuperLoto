@@ -2,7 +2,7 @@ from bs4 import BeautifulSoup
 from collections import Counter
 
 # HTML dosyasını oku
-with open("Super Loto Çekiliş Sonuçları.html", "r", encoding="utf-8") as file:
+with open("superloto.html", "r", encoding="utf-8") as file:
     html = file.read()
 
 # BeautifulSoup ile ayrıştır
