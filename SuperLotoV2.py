@@ -116,7 +116,7 @@ def main():
         df['Numbers'] = df[['Num1','Num2','Num3','Num4','Num5','Num6']].values.tolist()
 
         st.write("Geçmiş çekiliş verisi yüklendi.")
-        st.dataframe(df.head())
+        st.dataframe(df)
 
         with st.spinner("Olasılık hesaplanıyor..."):
             single_prob = weighted_single_probabilities(df)
