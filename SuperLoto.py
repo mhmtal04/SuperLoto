@@ -1,76 +1,56 @@
 import streamlit as st
-import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-from collections import Counter
 
-@st.cache_data(ttl=3600)
-def fetch_super_loto_results():
-    url = "https://www.millipiyangoonline.com/super-loto/cekilis-sonuclari"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
-    res = requests.get(url, headers=headers)
-    if res.status_code != 200:
-        st.error(f"Veri çekilemedi, status code: {res.status_code}")
-        return None
-    
-    soup = BeautifulSoup(res.text, "html.parser")
-    # Tabloyu bul (ilk çekiliş sonuçları tablosu)
-    table = soup.find("table", class_="tbl-cekilis-sonuclari")
-    if not table:
-        st.error("Sonuç tablosu bulunamadı.")
-        return None
-    
-    # Tablo başlıklarını al
-    headers = [th.get_text(strip=True) for th in table.find("thead").find_all("th")]
+def parse_html(file_path):
+    with open(file_path, "r", encoding="utf-8") as file:
+        soup = BeautifulSoup(file, "html.parser")
 
-    # Satırları işle
-    rows = []
-    for tr in table.find("tbody").find_all("tr"):
-        cells = [td.get_text(strip=True) for td in tr.find_all("td")]
-        rows.append(cells)
+    result_blocks = soup.find_all("div", class_="game-result-card")
 
-    df = pd.DataFrame(rows, columns=headers)
-    return df
+    data = []
+    for block in result_blocks:
+        tarih_tag = block.find("div", class_="game-date")
+        sayi_tags = block.find_all("div", class_="lottery-number")
 
-def analyze_numbers(df):
-    # Süper Loto sayıları sütun adlarına göre değişir,
-    # Örnek olarak 'Çekiliş' ve 6 sayı sütunu varsayalım
-    number_columns = [col for col in df.columns if col.lower().startswith("sayı") or col.lower().startswith("numara")]
-    if not number_columns:
-        # Eğer sütun isimleri farklıysa elle belirle
-        number_columns = df.columns[1:]  # 1. sütun çekiliş no veya tarih olabilir
+        if tarih_tag and len(sayi_tags) >= 6:
+            tarih = tarih_tag.get_text(strip=True)
+            sayilar = [int(tag.get_text(strip=True)) for tag in sayi_tags[:6]]
+            data.append({"Tarih": tarih, "Sayilar": sayilar})
 
-    all_numbers = []
-    for _, row in df.iterrows():
-        for col in number_columns:
-            try:
-                num = int(row[col])
-                all_numbers.append(num)
-            except:
-                continue
-    counts = Counter(all_numbers)
-    most_common = counts.most_common(10)
-    return most_common
+    return data
+
+def tahmin_uret(cekilisler):
+    sayilar = []
+    for cekilis in cekilisler:
+        sayilar.extend(cekilis["Sayilar"])
+
+    df = pd.Series(sayilar).value_counts().reset_index()
+    df.columns = ["Sayi", "Frekans"]
+    tahmin = sorted(df.head(6)["Sayi"].tolist())
+    return tahmin, df
 
 def main():
-    st.title("Süper Loto Otomatik Veri Çekme ve Tahmin")
+    st.title("Süper Loto Tahmin ve Sonuç Analizi")
 
-    df = fetch_super_loto_results()
-    if df is None:
-        st.stop()
+    html_dosyasi = "superloto.html"
+    cekilisler = parse_html(html_dosyasi)
 
-    st.subheader("Çekiliş Sonuçları")
-    st.dataframe(df)
+    if not cekilisler:
+        st.error("Geçerli çekiliş verisi bulunamadı.")
+        return
 
-    st.subheader("En Çok Çıkan Sayılar")
-    most_common = analyze_numbers(df)
-    if most_common:
-        result_df = pd.DataFrame(most_common, columns=["Sayı", "Çıkış Sayısı"])
-        st.table(result_df)
-    else:
-        st.info("Sayı analizi için uygun veri bulunamadı.")
+    st.subheader("Son 8 Süper Loto Çekilişi")
+    for cekilis in cekilisler:
+        st.write(f"{cekilis['Tarih']}: {', '.join(map(str, cekilis['Sayilar']))}")
+
+    tahmin, frekans_df = tahmin_uret(cekilisler)
+
+    st.subheader("Tahmin Edilen Sayılar (En Sık Çıkan 6)")
+    st.success(", ".join(map(str, tahmin)))
+
+    st.subheader("Sayı Frekansları")
+    st.dataframe(frekans_df.sort_values("Frekans", ascending=False))
 
 if __name__ == "__main__":
     main()
