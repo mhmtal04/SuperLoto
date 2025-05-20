@@ -1,39 +1,39 @@
+import streamlit as st
 from bs4 import BeautifulSoup
 from collections import Counter
 
-# HTML dosyasını oku
-with open("superloto.html", "r", encoding="utf-8") as file:
-    html = file.read()
+st.set_page_config(page_title="Süper Loto Tahmin Botu", layout="centered")
+st.title("Süper Loto Tahmin Botu")
 
-# BeautifulSoup ile ayrıştır
-soup = BeautifulSoup(html, "html.parser")
+try:
+    with open("superloto.html", "r", encoding="utf-8") as file:
+        html_content = file.read()
 
-# Çekiliş kartlarını bul (sınıf isimleri HTML’e göre düzenlenebilir)
-draw_cards = soup.find_all("div", class_="draw-result-card")
+    soup = BeautifulSoup(html_content, "html.parser")
 
-# Geçmiş çekiliş sayıları burada toplanacak
-veriler = []
+    draw_cards = soup.find_all("div", class_="draw-result-card")
+    veriler = []
 
-for card in draw_cards:
-    # Sayı toplama
-    sayilar = [int(span.text.strip()) for span in card.find_all("span", class_="number")]
-    
-    if len(sayilar) == 6:
-        veriler.append(sayilar)
+    for card in draw_cards:
+        sayilar = [int(span.text.strip()) for span in card.find_all("span", class_="number")]
+        if len(sayilar) == 6:
+            veriler.append(sayilar)
 
-# Eğer veri alınamadıysa uyarı ver
-if not veriler:
-    print("Veri alınamadı. HTML sınıf adları değişmiş olabilir.")
-    exit()
+    if not veriler:
+        st.error("Geçerli çekiliş verisi bulunamadı. HTML yapısı değişmiş olabilir.")
+    else:
+        tum_sayilar = [sayi for cekilis in veriler for sayi in cekilis]
+        sayi_sayaci = Counter(tum_sayilar)
+        tahmin = sayi_sayaci.most_common(6)
 
-# Tüm sayıları tek listede topla
-tum_sayilar = [sayi for cekilis in veriler for sayi in cekilis]
+        st.success(f"Toplam {len(veriler)} çekiliş analiz edildi.")
+        st.subheader("Tahmin Edilen Sayılar (En Çok Çıkan 6 Sayı):")
+        st.write([sayi for sayi, _ in tahmin])
 
-# En sık çıkan 6 sayıyı bul
-sayi_sayaci = Counter(tum_sayilar)
-tahmin = sayi_sayaci.most_common(6)
+        with st.expander("Tüm Sayıların Çıkma Sıklığı"):
+            st.dataframe(dict(sayi_sayaci.most_common()))
 
-# Sonuçları yazdır
-print("Toplam Çekiliş Sayısı:", len(veriler))
-print("Tahmin Edilen Sayılar (En Çok Çıkan 6 Sayı):")
-print([sayi for sayi, adet in tahmin])
+except FileNotFoundError:
+    st.error("HTML dosyası bulunamadı. Lütfen bu dizine 'superloto.html' adında HTML dosyasını ekleyin.")
+except Exception as e:
+    st.error(f"Bir hata oluştu: {str(e)}")
