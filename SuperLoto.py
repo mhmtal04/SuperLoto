@@ -10,20 +10,25 @@ try:
         html_content = file.read()
 
     soup = BeautifulSoup(html_content, "html.parser")
-    draw_cards = soup.find_all("div", class_="draw-result-card")
-    st.write(f"Bulunan çekiliş sayısı: {len(draw_cards)}")
+
+    # Çekiliş kartlarını bulma (çoklu class kontrolü)
+    draw_cards = soup.find_all("div", class_=lambda x: x and "draw-result-card" in x.split())
+    st.write(f"Bulunan çekiliş kartı sayısı: {len(draw_cards)}")
 
     veriler = []
 
-    for card in draw_cards:
-        sayilar = []
+    for i, card in enumerate(draw_cards):
         spans = card.find_all("span", class_=lambda x: x and "number" in x.split())
+        sayilar = []
         for span in spans:
             try:
                 sayi = int(span.text.strip())
                 sayilar.append(sayi)
             except ValueError:
                 continue
+
+        st.write(f"Çekiliş {i+1} sayıları: {sayilar}")
+
         if len(sayilar) == 6:
             veriler.append(sayilar)
 
