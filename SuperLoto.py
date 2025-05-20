@@ -10,17 +10,24 @@ try:
         html_content = file.read()
 
     soup = BeautifulSoup(html_content, "html.parser")
-
     draw_cards = soup.find_all("div", class_="draw-result-card")
+    st.write("Bulunan çekiliş kartı sayısı:", len(draw_cards))  # DEBUG
+
     veriler = []
 
     for card in draw_cards:
-        sayilar = [int(span.text.strip()) for span in card.find_all("span", class_="number")]
+        sayilar = []
+        for span in card.find_all("span", class_="number"):
+            try:
+                sayi = int(span.text.strip())
+                sayilar.append(sayi)
+            except ValueError:
+                continue
         if len(sayilar) == 6:
             veriler.append(sayilar)
 
     if not veriler:
-        st.error("Geçerli çekiliş verisi bulunamadı. HTML yapısı değişmiş olabilir.")
+        st.error("Geçerli çekiliş verisi bulunamadı.")
     else:
         tum_sayilar = [sayi for cekilis in veriler for sayi in cekilis]
         sayi_sayaci = Counter(tum_sayilar)
