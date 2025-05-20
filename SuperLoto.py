@@ -7,7 +7,7 @@ import random
 
 @st.cache_data(ttl=3600)
 def fetch_super_loto_results():
-    url = 'https://www.millipiyangoonline.com/super-loto/cekilis-sonuclari'
+    url = 'https://www.millipiyangoonline.com/super-loto/cekilis-sonuclari' 
     response = requests.get(url)
     soup = BeautifulSoup(response.text, 'html.parser')
 
