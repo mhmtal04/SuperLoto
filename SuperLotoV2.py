@@ -93,23 +93,16 @@ if uploaded_file:
                     best_candidate = candidate
             return best_candidate
 
-        if st.button("4 Tahmin Üret"):
-            predictions = []
-            tries = 0
-            while len(predictions) < 4 and tries < 100:
-                pred = generate_prediction()
-                if pred and pred not in predictions:
-                    predictions.append(pred)
-                tries += 1
-            if predictions:
-                st.session_state['predictions'] = predictions
+        if st.button("Tahmin Üret"):
+            prediction = generate_prediction()
+            if prediction:
+                st.session_state['prediction'] = prediction
             else:
-                st.session_state['predictions'] = None
+                st.session_state['prediction'] = None
 
-        if 'predictions' in st.session_state:
-            if st.session_state['predictions']:
-                for i, pred in enumerate(st.session_state['predictions'], 1):
-                    st.success(f"Tahmin {i}: {', '.join(str(n) for n in pred)}")
+        if 'prediction' in st.session_state:
+            if st.session_state['prediction']:
+                st.success(f"Tahmin Edilen Sayılar: {', '.join(str(n) for n in st.session_state['prediction'])}")
             else:
                 st.error("Uygun tahmin bulunamadı, lütfen tekrar deneyin.")
 
