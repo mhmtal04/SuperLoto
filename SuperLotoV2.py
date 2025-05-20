@@ -1,112 +1,102 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from itertools import combinations
 import random
-from collections import Counter
-import itertools
 
-st.title("Gelişmiş Süper Loto Tahmin Botu")
+st.title("Süper Loto Matematiksel Tahmin Botu")
 
-uploaded_file = st.file_uploader("CSV dosyanızı yükleyin (Tarih, Num1, Num2, ..., Num6 formatında)", type="csv")
+@st.cache_data
+def load_data_from_github(url):
+    df = pd.read_csv(url)
+    # Sayıları listeye çevir (boşluk veya virgül ayracına göre)
+    if 'numbers' in df.columns:
+        if isinstance(df['numbers'].iloc[0], str):
+            if ',' in df['numbers'].iloc[0]:
+                df['numbers'] = df['numbers'].apply(lambda x: list(map(int, x.split(','))))
+            else:
+                df['numbers'] = df['numbers'].apply(lambda x: list(map(int, x.split())))
+    return df
 
-if uploaded_file:
+def calculate_weighted_frequencies(draws):
+    N = len(draws)
+    weights = np.array([1/(N - i) for i in range(N)])
+    weights /= weights.sum()
+    
+    freq = {num:0 for num in range(1,61)}
+
+    for i, row in enumerate(draws.itertuples()):
+        nums = row.numbers
+        for n in nums:
+            freq[n] += weights[i]
+    return freq
+
+def calculate_pair_frequencies(draws):
+    pair_freq = {}
+    for row in draws.itertuples():
+        nums = row.numbers
+        for a,b in combinations(sorted(nums),2):
+            pair_freq[(a,b)] = pair_freq.get((a,b),0) + 1
+    return pair_freq
+
+def conditional_probabilities(freq, pair_freq):
+    cond_probs = {}
+    for (a,b), val in pair_freq.items():
+        cond_probs[(a,b)] = val / freq[a] if freq[a] > 0 else 0
+        cond_probs[(b,a)] = val / freq[b] if freq[b] > 0 else 0
+    return cond_probs
+
+def check_constraints(numbers):
+    evens = sum(1 for n in numbers if n%2==0)
+    avg = sum(numbers)/len(numbers)
+    cats = ['low' if n<=20 else 'mid' if n<=40 else 'high' for n in numbers]
+    return (
+        2 <= evens <= 4 and
+        25 <= avg <= 35 and
+        cats.count('low') == 2 and
+        cats.count('mid') == 2 and
+        cats.count('high') == 2
+    )
+
+def calculate_set_probability(numbers, freq, cond_probs):
+    prob = 1.0
+    for n in numbers:
+        prob *= freq.get(n, 0.0001)
+    for a,b in combinations(numbers, 2):
+        prob *= cond_probs.get((a,b), 0.0001)
+    return prob
+
+def monte_carlo_sampling(freq, cond_probs, trials=10000):
+    best_sets = []
+    for _ in range(trials):
+        candidate = sorted(random.sample(range(1,61), 6))
+        if not check_constraints(candidate):
+            continue
+        p = calculate_set_probability(candidate, freq, cond_probs)
+        best_sets.append((candidate, p))
+    best_sets.sort(key=lambda x: x[1], reverse=True)
+    return best_sets[:5]
+
+# ----------------------- Kullanıcıdan Github URL alma -----------------------
+
+csv_url = st.text_input("GitHub CSV dosyasının raw URL'sini girin:", "")
+
+if csv_url:
     try:
-        df = pd.read_csv(uploaded_file)
-        st.subheader("Yüklenen Dosya:")
-        st.write(df)
-
-        total_draws = len(df)
-        draws = df.iloc[:, 1:].values.tolist()
-
-        freq = Counter()
-        last_occurrence = {}
-
-        for idx, row in enumerate(draws):
-            for num in row:
-                freq[num] += 1
-                last_occurrence[num] = idx
-
-        base_score = {}
-        for num, f in freq.items():
-            base_score[num] = f * (1 / (total_draws - last_occurrence[num] + 1))
-
-        pair_freq = Counter()
-        for row in draws:
-            for pair in itertools.combinations(sorted(row), 2):
-                pair_freq[pair] += 1
-
-        def conditional_bonus(candidate):
-            bonus = 0
-            for a, b in itertools.combinations(sorted(candidate), 2):
-                pair = (a, b)
-                if pair in pair_freq:
-                    bonus += (pair_freq[pair] / freq[a] + pair_freq[pair] / freq[b]) / 2
-            return bonus
-
-        available_numbers = list(base_score.keys())
-        scores = np.array([base_score[num] for num in available_numbers], dtype=float)
-        prob = scores / scores.sum()
-
-        def get_category(n):
-            if n <= 20:
-                return 'low'
-            elif n <= 40:
-                return 'mid'
-            else:
-                return 'high'
-
-        def valid_category(candidate):
-            cats = [get_category(n) for n in candidate]
-            return cats.count('low') == 2 and cats.count('mid') == 2 and cats.count('high') == 2
-
-        def valid_even_odd(candidate):
-            evens = sum(1 for n in candidate if n % 2 == 0)
-            return evens in [2, 3, 4]
-
-        def valid_average(candidate):
-            avg = sum(candidate) / 6
-            return 25 <= avg <= 35
-
-        def not_similar_to_past(candidate, past_draws):
-            for past in past_draws:
-                if len(set(candidate) & set(past)) >= 3:
-                    return False
-            return True
-
-        def is_valid_candidate(candidate):
-            return (valid_category(candidate) and
-                    valid_even_odd(candidate) and
-                    valid_average(candidate) and
-                    not_similar_to_past(candidate, draws))
-
-        def generate_prediction(max_tries=10000):
-            best_candidate = None
-            best_score = -np.inf
-            for _ in range(max_tries):
-                candidate = np.random.choice(available_numbers, 6, replace=False, p=prob)
-                candidate = sorted(candidate.tolist())
-                if not is_valid_candidate(candidate):
-                    continue
-                candidate_score = sum(base_score[n] for n in candidate) + conditional_bonus(candidate)
-                if candidate_score > best_score:
-                    best_score = candidate_score
-                    best_candidate = candidate
-            return best_candidate
-
+        data = load_data_from_github(csv_url)
+        st.success(f"{len(data)} çekiliş yüklendi.")
+        
+        freq = calculate_weighted_frequencies(data)
+        pair_freq = calculate_pair_frequencies(data)
+        cond_probs = conditional_probabilities(freq, pair_freq)
+        
         if st.button("Tahmin Üret"):
-            prediction = generate_prediction()
-            if prediction:
-                st.session_state['prediction'] = prediction
-            else:
-                st.session_state['prediction'] = None
-
-        if 'prediction' in st.session_state:
-            if st.session_state['prediction']:
-                st.success(f"Tahmin Edilen Sayılar: {', '.join(str(n) for n in st.session_state['prediction'])}")
-            else:
-                st.error("Uygun tahmin bulunamadı, lütfen tekrar deneyin.")
-
+            with st.spinner("Tahminler hesaplanıyor..."):
+                predictions = monte_carlo_sampling(freq, cond_probs, trials=15000)
+            st.subheader("En yüksek olasılıklı 5 tahmin:")
+            for i, (numbers, prob) in enumerate(predictions, 1):
+                st.write(f"Tahmin {i}: {', '.join(map(str, numbers))} (Olasılık: {prob:.6e})")
     except Exception as e:
-        st.error(f"Dosya işlenirken hata oluştu: {e}")
+        st.error(f"Veri yüklenirken hata oluştu: {e}")
 else:
-    st.info("Lütfen tahmin yapmak için bir CSV dosyası yükleyin.")
+    st.info("Lütfen geçerli bir GitHub raw CSV URL'si girin.")
