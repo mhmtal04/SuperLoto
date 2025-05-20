@@ -1,56 +1,44 @@
 import streamlit as st
 from bs4 import BeautifulSoup
 import pandas as pd
+import random
 
-def parse_html(file_path):
-    with open(file_path, "r", encoding="utf-8") as file:
-        soup = BeautifulSoup(file, "html.parser")
+# HTML'den veri çekme
+def cekilis_verilerini_al(dosya_adi):
+    with open(dosya_adi, "r", encoding="utf-8") as f:
+        soup = BeautifulSoup(f, "html.parser")
 
-    result_blocks = soup.find_all("div", class_="game-result-card")
+    tarih_tags = soup.find_all("span", class_="draw-date ng-star-inserted")
+    cekilis_kutulari = soup.find_all("div", class_="result-group ng-star-inserted")
 
-    data = []
-    for block in result_blocks:
-        tarih_tag = block.find("div", class_="game-date")
-        sayi_tags = block.find_all("div", class_="lottery-number")
+    veriler = []
+    for tarih, kutu in zip(tarih_tags, cekilis_kutulari):
+        sayilar = [int(span.text) for span in kutu.find_all("span", class_="ball ng-star-inserted")]
+        if len(sayilar) == 6:
+            veriler.append({
+                "Tarih": tarih.text.strip(),
+                "Sayılar": sayilar
+            })
+    return veriler
 
-        if tarih_tag and len(sayi_tags) >= 6:
-            tarih = tarih_tag.get_text(strip=True)
-            sayilar = [int(tag.get_text(strip=True)) for tag in sayi_tags[:6]]
-            data.append({"Tarih": tarih, "Sayilar": sayilar})
+# Tahmin üretme (basit rastgele)
+def tahmin_uret():
+    return sorted(random.sample(range(1, 61), 6))
 
-    return data
+# Streamlit Arayüzü
+st.title("Süper Loto Tahmin Botu")
+st.markdown("Milli Piyango verileriyle çalışır.")
 
-def tahmin_uret(cekilisler):
-    sayilar = []
-    for cekilis in cekilisler:
-        sayilar.extend(cekilis["Sayilar"])
+veriler = cekilis_verilerini_al("superloto.html")
 
-    df = pd.Series(sayilar).value_counts().reset_index()
-    df.columns = ["Sayi", "Frekans"]
-    tahmin = sorted(df.head(6)["Sayi"].tolist())
-    return tahmin, df
+if veriler:
+    st.subheader("Geçmiş Çekilişler")
+    for v in veriler:
+        st.write(f"{v['Tarih']}: {', '.join(map(str, v['Sayılar']))}")
+else:
+    st.error("Geçerli çekiliş verisi bulunamadı.")
 
-def main():
-    st.title("Süper Loto Tahmin ve Sonuç Analizi")
-
-    html_dosyasi = "superloto.html"
-    cekilisler = parse_html(html_dosyasi)
-
-    if not cekilisler:
-        st.error("Geçerli çekiliş verisi bulunamadı.")
-        return
-
-    st.subheader("Son 8 Süper Loto Çekilişi")
-    for cekilis in cekilisler:
-        st.write(f"{cekilis['Tarih']}: {', '.join(map(str, cekilis['Sayilar']))}")
-
-    tahmin, frekans_df = tahmin_uret(cekilisler)
-
-    st.subheader("Tahmin Edilen Sayılar (En Sık Çıkan 6)")
-    st.success(", ".join(map(str, tahmin)))
-
-    st.subheader("Sayı Frekansları")
-    st.dataframe(frekans_df.sort_values("Frekans", ascending=False))
-
-if __name__ == "__main__":
-    main()
+st.subheader("Tahmin")
+if st.button("Tahmin Üret"):
+    tahmin = tahmin_uret()
+    st.success("Tahmin Edilen Sayılar: " + ", ".join(map(str, tahmin)))
