@@ -1,65 +1,131 @@
-import yfinance as yf
-import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error
 import streamlit as st
-import datetime
+import pandas as pd
+import numpy as np
+import random
+from collections import Counter, defaultdict
+import itertools
 
-st.set_page_config(page_title="Hisse Tahmin Uygulaması", layout="centered")
-st.title("📈 Hisse Yüzde Değişim Tahmini")
+st.title("Gelişmiş Süper Loto Tahmin Botu")
 
-symbol = st.text_input("Hisse kodunu girin (örnek: THYAO)", "")
+uploaded_file = st.file_uploader("CSV dosyanızı yükleyin (Tarih, Num1, Num2, ..., Num6 formatında)", type="csv")
 
-# Tarih aralığı seçimi
-col1, col2 = st.columns(2)
-with col1:
-    start_date = st.date_input("Başlangıç tarihi", datetime.date.today() - datetime.timedelta(days=180))
-with col2:
-    end_date = st.date_input("Bitiş tarihi", datetime.date.today())
+if uploaded_file:
+    try:
+        df = pd.read_csv(uploaded_file)
+        st.subheader("Yüklenen Dosyanın Tüm Verisi:")
+        st.write(df)
+        
+        # --- Temel Hazırlık ---
+        # Varsayıyoruz ki CSV dosyasında ilk sütun tarih, geri kalanlar çekiliş numaraları
+        total_draws = len(df)
+        draws = df.iloc[:, 1:].values.tolist()  # her çekilişteki 6 sayı
 
-if symbol:
-    symbol = symbol.upper() + ".IS"
-    st.write(f"**{symbol}** verisi indiriliyor...")
-    data = yf.download(symbol, start=start_date, end=end_date)
+        # 1. Frekans Hesabı
+        freq = Counter()
+        # 1a. Her sayının en son hangi çekilişte çıktığını tutalım (indeks bazında)
+        last_occurrence = {}
+        for idx, row in enumerate(draws):
+            for num in row:
+                freq[num] += 1
+                last_occurrence[num] = idx  # sıralı okuduğumuz için sonuncusu kalır
 
-    if data.empty:
-        st.warning("Veri indirilemedi. Lütfen geçerli bir hisse kodu veya tarih aralığı girin.")
-    else:
-        # Anlık fiyatı göster
-        current_price = data["Close"].iloc[-1]
-        st.info(f"Anlık Fiyat: {current_price:.2f} TL")
+        # 2. Zaman Ağırlıklı Frekans: 
+        # Formül: base_score(n) = f(n) * (1/(total_draws - last_occurrence(n) + 1))
+        base_score = {}
+        for num, f in freq.items():
+            # Eğer en son index çok yakınsa (yeni çekilişte), pay daha yüksek olur.
+            base_score[num] = f * (1 / (total_draws - last_occurrence[num] + 1))
+        
+        # 3. Koşullu Olasılık (Pair Bonus) hesaplaması:
+        # Tüm çekilişlerde birlikte çıkan sayı çiftleri için frekans sayısı
+        pair_freq = Counter()
+        for row in draws:
+            # Sıraya göre (küçükten büyüğe) çiftler oluşturalım
+            for pair in itertools.combinations(sorted(row), 2):
+                pair_freq[pair] += 1
 
-        # Kapanış fiyatı grafiği
-        st.line_chart(data["Close"], use_container_width=True)
+        # Koşullu bonus: Örneğin, bonus(a,b) = (pair_freq((a,b))/freq[a] + pair_freq((a,b))/freq[b]) / 2
+        def conditional_bonus(candidate):
+            bonus = 0
+            for a, b in itertools.combinations(sorted(candidate), 2):
+                pair = (a, b)
+                if pair in pair_freq:
+                    bonus += (pair_freq[pair] / freq[a] + pair_freq[pair] / freq[b]) / 2
+            return bonus
 
-        # Özellikleri hazırla
-        data["Return"] = data["Close"].pct_change()
-        data["Target"] = data["Return"].shift(-1) * 100  # yüzdesel değişim
-        data["MA5"] = data["Close"].rolling(window=5).mean()
-        data["MA10"] = data["Close"].rolling(window=10).mean()
-        data = data.dropna()
+        # Toplam sayıları (1-60) üzerinden çalışacağımızı varsayalım.
+        all_numbers = list(range(1, 61))
+        # Eğer dosyanızda eksik veya sadece belirli sayılar varsa, frekans dict’inden alabilirsiniz.
+        # Burada, yalnızca daha önce çekilmiş sayıları göz önüne alıyoruz:
+        available_numbers = list(base_score.keys())
 
-        if data.shape[0] < 20:
-            st.warning("Yeterli veri yok. Daha uzun zaman dilimi seçin.")
-        else:
-            features = ["Close", "MA5", "MA10"]
-            X = data[features]
-            y = data["Target"]
-
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-            model = RandomForestRegressor()
-            model.fit(X_train, y_train)
-
-            preds = model.predict(X_test)
-            mae = mean_absolute_error(y_test, preds)
-            st.success(f"Model Ortalama Hata: ±{mae:.2f}%")
-
-            latest_data = X.tail(1)
-            prediction = model.predict(latest_data)[0]
-
-            st.subheader("Tahmin Sonucu:")
-            if prediction > 0:
-                st.write(f"Hisse yarın yaklaşık **%+{prediction:.2f}** artış gösterebilir.")
+        # Normalize edilmiş olasılık dağılımı: sadece mevcut sayılara göre
+        scores = np.array([base_score[num] for num in available_numbers], dtype=float)
+        prob = scores / scores.sum()
+        
+        # --- Kural Kontrolleri ---
+        # a) Kategori (Low-Mid-High): 
+        # low: 1-20, mid: 21-40, high: 41-60; her kategoriden 2 sayı
+        def get_category(n):
+            if n <= 20:
+                return 'low'
+            elif n <= 40:
+                return 'mid'
             else:
-                st.write(f"Hisse yarın yaklaşık **{prediction:.2f}%** düşüş gösterebilir.")
+                return 'high'
+        
+        def valid_category(candidate):
+            cats = [get_category(n) for n in candidate]
+            return cats.count('low') == 2 and cats.count('mid') == 2 and cats.count('high') == 2
+
+        # b) Çift-Tek Dengesi: En az 2, en fazla 4 çift sayı
+        def valid_even_odd(candidate):
+            evens = sum(1 for n in candidate if n % 2 == 0)
+            return evens in [2, 3, 4]
+
+        # c) Sayısal Ortalama Kontrolü: Ortalama 25-35 aralığında olsun
+        def valid_average(candidate):
+            avg = sum(candidate) / 6
+            return 25 <= avg <= 35
+
+        # d) Geçmişle Benzerlik Kontrolü: Herhangi çekilişle 3 veya daha fazla ortak sayı varsa reddedilsin
+        def not_similar_to_past(candidate, past_draws):
+            for past in past_draws:
+                if len(set(candidate) & set(past)) >= 3:
+                    return False
+            return True
+
+        # fonskiyon: Tüm kuralları kontrol eden
+        def is_valid_candidate(candidate):
+            return (valid_category(candidate) and 
+                    valid_even_odd(candidate) and 
+                    valid_average(candidate) and 
+                    not_similar_to_past(candidate, draws))
+        
+        # --- Tahmin Üretim Fonksiyonu ---
+        def generate_prediction(max_tries=10000):
+            best_candidate = None
+            best_score = -np.inf
+            for _ in range(max_tries):
+                # Ağırlıklı seçim: np.random.choice ile replace=False
+                candidate = np.random.choice(available_numbers, 6, replace=False, p=prob)
+                candidate = sorted(candidate.tolist())
+                if not is_valid_candidate(candidate):
+                    continue
+                # Toplam puan: sum(base_score) + conditional bonus
+                candidate_score = sum(base_score[n] for n in candidate) + conditional_bonus(candidate)
+                if candidate_score > best_score:
+                    best_score = candidate_score
+                    best_candidate = candidate
+            return best_candidate
+
+        if st.button("Tahmin Üret"):
+            prediction = generate_prediction()
+            if prediction:
+                st.success(f"Tahmin Edilen Sayılar: {prediction}")
+            else:
+                st.error("Uygun tahmin bulunamadı, lütfen tekrar deneyin.")
+    except Exception as e:
+        st.error(f"Dosya işlenirken hata oluştu: {e}")
+else:
+    st.info("Lütfen tahmin yapmak için bir CSV dosyası yükleyin.")
