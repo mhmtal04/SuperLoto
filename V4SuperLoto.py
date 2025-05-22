@@ -1,18 +1,18 @@
-import streamlit as st
 import csv
 import numpy as np
 from collections import Counter, defaultdict
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
-from itertools import combinations
+import streamlit as st
 
 # -------------------
 # 1. CSV'den çekiliş verisi yükleme
 # -------------------
-def load_draws_from_csv(file):
+def load_draws_from_csv(uploaded_file):
     draws = []
-    reader = csv.reader(file)
+    decoded = uploaded_file.read().decode('utf-8').splitlines()
+    reader = csv.reader(decoded)
     for row in reader:
         try:
             draw = list(map(int, row))
@@ -26,7 +26,7 @@ def load_draws_from_csv(file):
 # 2. Zaman Bazlı Ağırlıklı Frekans Hesaplama
 # -------------------
 def weighted_frequency(draws, max_number=60):
-    weights = np.linspace(1, 2, len(draws))  # eski veriye 1, yeni veriye 2 ağırlık
+    weights = np.linspace(1, 2, len(draws))
     freq = Counter()
     for w, draw in zip(weights, draws):
         for num in draw:
@@ -93,25 +93,20 @@ def bayesian_update(prior_probs, observed_counts, total_observations):
 def prepare_features(draws, max_number=60):
     X = []
     y = []
-
     for i in range(len(draws) - 1):
         current_draw = draws[i]
         next_draw = draws[i + 1]
-
         features = [1 if num in current_draw else 0 for num in range(1, max_number + 1)]
-
         for num in range(1, max_number + 1):
             label = 1 if num in next_draw else 0
             X.append(features)
             y.append(label)
-
     return np.array(X), np.array(y)
 
 def train_xgboost(X, y):
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
     model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss')
     model.fit(X_train, y_train)
-
     preds = model.predict(X_val)
     acc = accuracy_score(y_val, preds)
     return model, acc
@@ -119,11 +114,10 @@ def train_xgboost(X, y):
 def predict_xgboost(model, last_draw, max_number=60):
     features = [1 if num in last_draw else 0 for num in range(1, max_number + 1)]
     proba = model.predict_proba([features])[0]
-    prob_dict = {num+1: proba[num] for num in range(max_number)}
-    return prob_dict
+    return {num+1: proba[num] for num in range(max_number)}
 
 # -------------------
-# 7. Tahmin oluşturma ve kısıtlar (en az 2 tek, 2 çift)
+# 7. Tahmin oluşturma ve kısıtlar
 # -------------------
 def is_valid_combination(numbers):
     evens = sum(1 for n in numbers if n % 2 == 0)
@@ -133,7 +127,6 @@ def is_valid_combination(numbers):
 def combined_prediction(draws, model_xgb, alpha=0.4, beta=0.3, gamma=0.3):
     max_number = 60
     last_draw = draws[-1]
-
     prior_probs = weighted_frequency(draws, max_number)
     pair_counts, single_counts = pair_frequencies(draws)
     cond_probs = conditional_probabilities(pair_counts, single_counts)
@@ -142,59 +135,40 @@ def combined_prediction(draws, model_xgb, alpha=0.4, beta=0.3, gamma=0.3):
     bayes_probs = bayesian_update(prior_probs, observed_counts, total_obs)
     markov_probs = compute_markov_probs(draws)
     xgb_probs = predict_xgboost(model_xgb, last_draw, max_number)
-
     combined_scores = {}
-
     for num in range(1, max_number + 1):
         markov_prob = np.mean(list(markov_probs.get(num, {}).values())) if markov_probs.get(num) else 0
-        cond_prob = 0
-        for ld_num in last_draw:
-            cond_prob += cond_probs.get((ld_num, num), 0)
-        cond_prob /= len(last_draw)
+        cond_prob = sum(cond_probs.get((ld_num, num), 0) for ld_num in last_draw) / len(last_draw)
         combined_scores[num] = (alpha * xgb_probs.get(num, 0) +
                                 beta * bayes_probs.get(num, 0) +
                                 gamma * (0.5*markov_prob + 0.5*cond_prob))
-
+    from itertools import combinations
     top_candidates = sorted(combined_scores, key=combined_scores.get, reverse=True)[:20]
-
-    valid_combos = []
-    for combo in combinations(top_candidates, 6):
-        if is_valid_combination(combo):
-            valid_combos.append((combo, sum(combined_scores[n] for n in combo)))
+    valid_combos = [(combo, sum(combined_scores[n] for n in combo)) for combo in combinations(top_candidates, 6) if is_valid_combination(combo)]
     if not valid_combos:
-        best_6 = sorted(combined_scores, key=combined_scores.get, reverse=True)[:6]
-        return best_6, combined_scores
-
+        return sorted(combined_scores, key=combined_scores.get, reverse=True)[:6], combined_scores
     best_combo = max(valid_combos, key=lambda x: x[1])[0]
     return best_combo, combined_scores
 
 # -------------------
-# Streamlit Arayüzü
+# Streamlit Uygulaması
 # -------------------
-def main():
-    st.title("Süper Loto Tahmin Modeli (V3)")
+st.title("Süper Loto V4 Tahmin Botu")
 
-    uploaded_file = st.file_uploader("Çekiliş verisi CSV dosyasını yükleyin", type=['csv'])
+uploaded_file = st.file_uploader("CSV formatında geçmiş çekiliş verisini yükleyin.", type="csv")
 
-    if uploaded_file is not None:
-        draws = load_draws_from_csv(uploaded_file)
-        if len(draws) < 2:
-            st.warning("Yeterli çekiliş verisi yok. En az 2 çekiliş gereklidir.")
-            return
-
-        st.write(f"Toplam çekiliş sayısı: {len(draws)}")
+if uploaded_file is not None:
+    draws = load_draws_from_csv(uploaded_file)
+    if len(draws) < 2:
+        st.error("Geçerli en az 2 çekiliş verisi gereklidir.")
+    else:
         X, y = prepare_features(draws)
-        with st.spinner("Model eğitiliyor..."):
-            model_xgb, acc = train_xgboost(X, y)
-        st.success(f"Model doğruluk skoru (validation): {acc:.4f}")
+        model_xgb, acc = train_xgboost(X, y)
+        st.success(f"XGBoost doğruluk: {acc:.4f}")
 
-        with st.spinner("Tahmin yapılıyor..."):
-            predicted_numbers, combined_scores = combined_prediction(draws, model_xgb)
-
-        st.write("Tahmin edilen sayılar:", predicted_numbers)
-        st.write("İlk 10 olasılık skoru:")
-        for num, score in sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)[:10]:
-            st.write(f"Sayı {num}: {score:.4f}")
-
-if __name__ == "__main__":
-    main()
+        predicted_numbers, combined_scores = combined_prediction(draws, model_xgb)
+        st.subheader("Tahmin Edilen 6 Sayı")
+        st.write(sorted(predicted_numbers))
+        st.subheader("Olasılık Skorları (İlk 10)")
+        top_scores = dict(sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)[:10])
+        st.write(top_scores)
