@@ -5,7 +5,8 @@ from itertools import combinations
 from datetime import datetime
 import xgboost as xgb
 
-# --- Ağırlık hesaplama (zaman bazlı) ---
+# ------------- Temel Fonksiyonlar -------------
+
 def get_weights(dates):
     dates = pd.to_datetime(dates)
     days_ago = (dates.max() - dates).dt.days
@@ -13,37 +14,29 @@ def get_weights(dates):
     weights = (max_days - days_ago) / max_days
     return weights
 
-# --- Tekil sayıların ağırlıklı olasılıkları ---
 def weighted_single_probabilities(df):
     weights = get_weights(df['Date'])
     total_weight = weights.sum()
-
     freq = pd.Series(0, index=range(1, 61), dtype=float)
-
     for idx, row in df.iterrows():
         numbers = row['Numbers']
         w = weights[idx]
         for n in numbers:
             freq[n] += w
-
     prob = freq / total_weight
     return prob
 
-# --- İkili sayıların frekansı ---
 def pair_frequencies(df):
     pair_freq = pd.DataFrame(0, index=range(1, 61), columns=range(1, 61), dtype=float)
     weights = get_weights(df['Date'])
-
     for idx, row in df.iterrows():
         numbers = row['Numbers']
         w = weights[idx]
         for a, b in combinations(numbers, 2):
             pair_freq.at[a, b] += w
             pair_freq.at[b, a] += w
-
     return pair_freq
 
-# --- Koşullu olasılıklar ---
 def conditional_probabilities(single_prob, pair_freq):
     cond_prob = pd.DataFrame(0, index=range(1, 61), columns=range(1, 61), dtype=float)
     for a in range(1, 61):
@@ -55,13 +48,11 @@ def conditional_probabilities(single_prob, pair_freq):
             cond_prob.loc[a, :] = 0
     return cond_prob
 
-# --- Kısıt: en az 2 tek ve 2 çift sayı ---
 def check_constraints(numbers):
     odd_count = sum(n % 2 == 1 for n in numbers)
     even_count = len(numbers) - odd_count
     return odd_count >= 2 and even_count >= 2
 
-# --- Kombinasyon olasılığı ---
 def combo_probability(numbers, single_prob, cond_prob):
     prob = 1.0
     for n in numbers:
@@ -71,7 +62,7 @@ def combo_probability(numbers, single_prob, cond_prob):
             prob *= cond_prob.at[numbers[i], numbers[j]]
     return prob
 
-# --- Monte Carlo ile tahmin üret ---
+# ------------- Monte Carlo Tahmin -------------
 def generate_predictions(single_prob, cond_prob, n_preds=1, n_numbers=6, trials=10000):
     predictions = []
     numbers_list = list(range(1, 61))
@@ -99,13 +90,12 @@ def generate_predictions(single_prob, cond_prob, n_preds=1, n_numbers=6, trials=
 
     return predictions
 
-# --- Bayesian Model ---
+# ------------- Bayesian Model -------------
 def bayesian_model(single_prob, n_numbers=6):
-    # En yüksek tekil olasılıkları seç
     numbers = single_prob.sort_values(ascending=False).index[:n_numbers]
     return np.array(numbers)
 
-# --- Markov Zinciri Model ---
+# ------------- Markov Zinciri Model -------------
 def markov_chain_model(df, n_numbers=6):
     transition = pd.DataFrame(0, index=range(1,61), columns=range(1,61), dtype=float)
     total_transitions = pd.Series(0, index=range(1,61), dtype=float)
@@ -122,17 +112,16 @@ def markov_chain_model(df, n_numbers=6):
     for num in range(1,61):
         if total_transitions[num] > 0:
             transition.loc[num] /= total_transitions[num]
-
+    
     last_draw = draws[-1]
     scores = pd.Series(0, index=range(1,61), dtype=float)
     for num in last_draw:
         scores += transition.loc[num]
     scores = scores / len(last_draw)
-
     pred = scores.sort_values(ascending=False).index[:n_numbers]
     return np.array(pred)
 
-# --- XGBoost Model Eğitimi ---
+# ------------- XGBoost Model -------------
 def xgboost_model(df):
     df = df.reset_index(drop=True)
     X = []
@@ -143,12 +132,10 @@ def xgboost_model(df):
 
     for idx in range(len(df) - 1):
         feature = np.zeros(NUMBERS_RANGE, dtype=int)
-        # Set 1 for drawn numbers in idx-th draw
-        for num in df.loc[idx]['Numbers']:
-            feature[num-1] = 1
+        for number in df.loc[idx]['Numbers']:
+            feature[number-1] = 1
         X.append(feature)
-        target = np.array([num-1 for num in df.loc[idx + 1]['Numbers']])
-        y.append(target)
+        y.append([num-1 for num in df.loc[idx + 1]['Numbers']])
 
     X = np.array(X)
     y = np.array(y)
@@ -161,7 +148,6 @@ def xgboost_model(df):
         models.append(model)
     return models
 
-# --- XGBoost Tahmin ---
 def predict_xgboost(models, last_draw):
     feature = np.zeros(60, dtype=int)
     for num in last_draw:
@@ -172,7 +158,7 @@ def predict_xgboost(models, last_draw):
         preds.append(pred)
     return np.array(preds)
 
-# --- Modellerin Kombinasyonu ---
+# ------------- Modellerin Kombinasyonu -------------
 def combined_predictions(df, single_prob, cond_prob, n_preds=1, n_numbers=6):
     preds = []
 
@@ -188,19 +174,13 @@ def combined_predictions(df, single_prob, cond_prob, n_preds=1, n_numbers=6):
     xgb_probs = predict_xgboost(xgb_models, last_draw)
 
     xgb_scores = xgb_probs.sum(axis=0)
-
     combined_scores = pd.Series(0, index=range(1,61), dtype=float)
 
-    # Bayesian ve Markov puanları (1 puan)
     combined_scores[bayes_pred] += 1.0
     combined_scores[markov_pred] += 1.0
 
-    # XGBoost skorlarını normalize edip ekle
-    if xgb_scores.max() - xgb_scores.min() > 0:
-        xgb_scores_norm = (xgb_scores - xgb_scores.min()) / (xgb_scores.max() - xgb_scores.min())
-    else:
-        xgb_scores_norm = xgb_scores
-    combined_scores += xgb_scores_norm
+    xgb_scores_norm = (xgb_scores - xgb_scores.min()) / (xgb_scores.max() - xgb_scores.min() + 1e-9)
+    combined_scores += xgb_scores_norm.values
 
     top_numbers = combined_scores.sort_values(ascending=False).index[:n_numbers]
 
@@ -212,7 +192,8 @@ def combined_predictions(df, single_prob, cond_prob, n_preds=1, n_numbers=6):
 
     return preds
 
-# --- Ana Streamlit Arayüzü ---
+# ------------- Streamlit Arayüzü -------------
+
 def main():
     st.title("Süper Loto Gelişmiş Tahmin Botu")
 
@@ -224,7 +205,7 @@ def main():
         df['Numbers'] = df[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']].values.tolist()
 
         st.success(f"Veriler yüklendi. Toplam satır sayısı: {len(df)}")
-        st.write(df)  # CSV'deki tüm veriler gösteriliyor
+        st.write(df)  # Tüm veriler gösteriliyor
 
         with st.spinner("Olasılıklar hesaplanıyor..."):
             single_prob = weighted_single_probabilities(df)
@@ -240,4 +221,8 @@ def main():
                 preds = combined_predictions(df, single_prob, cond_prob, n_preds=n_preds)
 
             st.success("Tahminler hazır!")
-            for
+            for i, (combo, _) in enumerate(preds, 1):
+                st.write(f"Tahmin {i}: {', '.join(map(str, combo))}")
+
+if __name__ == "__main__":
+    main()
