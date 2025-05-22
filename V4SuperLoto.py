@@ -86,7 +86,8 @@ def xgboost_model(df):
     for _, row in df.iterrows():
         feature = np.zeros(60)
         numbers = row.loc['Num1':'Num6'].values
-        feature[numbers - 1] = 1
+       for num in numbers:
+    feature[num - 1] = 1
         features.append(feature)
     X = np.array(features[:-1])
     y = np.array(features[1:])
