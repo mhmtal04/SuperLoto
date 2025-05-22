@@ -1,51 +1,44 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pymc3 as pm
+import pymc as pm
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 import warnings
 warnings.filterwarnings("ignore")
 
 
-# --- Zaman Bazlı Ağırlık Hesaplama ---
 def zaman_agirliklari(dates):
     dates = pd.to_datetime(dates)
     days_since = (dates.max() - dates).dt.days
-    weights = 1 / (1 + days_since)  # Yeni tarih daha yüksek ağırlık alır
+    weights = 1 / (1 + days_since)
     weights /= weights.sum()
     return weights.values
 
 
-# --- Kısıt kontrolü ---
 def kisitlar_tamammi(nums):
     tek_sayilar = sum(1 for n in nums if n % 2 == 1)
-    cift_sayilar = 6 - tek_sayilar
+    cift_sayilar = len(nums) - tek_sayilar
     return tek_sayilar >= 2 and cift_sayilar >= 2
 
 
-# --- Bayesian Model ---
 def bayesian_model(df, weights):
-    all_numbers = np.arange(1, 61)
     counts = np.zeros(60)
-
     for i, row in df.iterrows():
         for col in ['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']:
             counts[row[col] - 1] += weights[i]
 
     probs = counts / counts.sum()
-
-    # Basitleştirilmiş Bayesian Dirichlet ile ağırlıklı olasılık
     alpha = probs * 100 + 1
 
     with pm.Model() as model:
         p = pm.Dirichlet('p', a=alpha)
         trace = pm.sample(300, tune=200, chains=1, progressbar=False, random_seed=42)
-    bayes_probs = np.mean(trace['p'], axis=0)
+
+    bayes_probs = trace.posterior['p'].mean(dim=['chain', 'draw']).values
     return bayes_probs
 
 
-# --- Markov Zinciri Modeli ---
 def markov_model(df):
     size = 60
     mat = np.zeros((size, size))
@@ -61,9 +54,7 @@ def markov_model(df):
     return mat
 
 
-# --- XGBoost Modeli ---
 def xgboost_model(df):
-    all_numbers = np.arange(1, 61)
     features = []
     labels = []
 
@@ -88,7 +79,6 @@ def xgboost_model(df):
     return models
 
 
-# --- Koşullu Olasılık ---
 def conditional_probabilities(df):
     size = 60
     cond_mat = np.zeros((size, size))
@@ -105,7 +95,6 @@ def conditional_probabilities(df):
     return cond_mat
 
 
-# --- İkili Frekans ---
 def pair_frequencies(df):
     size = 60
     pair_mat = np.zeros((size, size))
@@ -121,14 +110,6 @@ def pair_frequencies(df):
     return pair_mat
 
 
-# --- Kısıtları Kontrol Et ---
-def kisitlar_tamammi(nums):
-    tek_sayilar = sum(1 for n in nums if n % 2 == 1)
-    cift_sayilar = 6 - tek_sayilar
-    return tek_sayilar >= 2 and cift_sayilar >= 2
-
-
-# --- Tahmin Üretme ---
 def generate_combined_predictions(df, n_preds=1):
     all_numbers = np.arange(1, 61)
 
@@ -147,34 +128,25 @@ def generate_combined_predictions(df, n_preds=1):
         best_combination = None
 
         for __ in range(trials):
-            # Bayesian ağırlıklı seçim
             bayes_choice = np.random.choice(all_numbers, 6, replace=False, p=bayes_probs)
-
-            # Markov ile geçiş ağırlığı
             markov_probs = np.mean(markov_mat[bayes_choice - 1], axis=0)
 
-            # XGBoost ile tahmin olasılıkları
             xgb_probs = np.zeros(60)
             for i, model in enumerate(xgb_models):
-                # Burada model input olarak 6 sayı içeren vektör bekler, basitleştirilmiş versiyon:
                 xgb_probs[i] = model.predict_proba(np.eye(60)[i].reshape(1, -1))[0][1]
             xgb_probs /= xgb_probs.sum()
 
-            # Koşullu olasılık ve ikili frekansları ortala
             cond_probs = np.mean(cond_mat[bayes_choice - 1], axis=0)
             pair_probs = np.mean(pair_mat[bayes_choice - 1], axis=0)
 
-            # Tüm olasılıkları ortala ve normalize et
             combined_probs = (bayes_probs + markov_probs + xgb_probs + cond_probs + pair_probs) / 5
             combined_probs /= combined_probs.sum()
 
-            # Yeni tahmin kombinasyonu
             try_combination = np.random.choice(all_numbers, 6, replace=False, p=combined_probs)
 
             if not kisitlar_tamammi(try_combination):
                 continue
 
-            # Skor: Bayesian ağırlıklı toplam
             score = sum(bayes_probs[num - 1] for num in try_combination)
             if score > best_score:
                 best_score = score
@@ -185,9 +157,8 @@ def generate_combined_predictions(df, n_preds=1):
     return predictions
 
 
-# --- Streamlit Arayüzü ---
 def main():
-    st.title("Süper Loto Gelişmiş Tahmin Botu")
+    st.title("Süper Loto Gelişmiş Tahmin Botu (PyMC)")
 
     uploaded_file = st.file_uploader("CSV dosyanızı yükleyin (Date, Num1~Num6 sütunları)", type=['csv'])
     if uploaded_file is not None:
