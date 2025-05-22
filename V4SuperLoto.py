@@ -1,148 +1,172 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from itertools import combinations
-import xgboost as xgb
 import pymc as pm
+import xgboost as xgb
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import train_test_split
 
-# -- Önceki fonksiyonlar: get_weights, weighted_single_probabilities, pair_frequencies, conditional_probabilities, check_constraints aynı kalabilir --
+st.set_page_config(page_title="Süper Loto Gelişmiş Tahmin Botu", layout="centered")
 
-# XGBoost Model Eğitimi
-def train_xgboost(df):
-    X, y = [], []
+def zaman_agirliklari(dates):
+    # Tarihler güncel ise daha yüksek ağırlık verir, lineer artış
+    n = len(dates)
+    return np.linspace(1, 2, n)
+
+def tekil_agirliklar(df):
+    # Her sayının frekansı, toplam frekans üzerinden normalize
+    all_numbers = np.arange(1, 61)
+    counts = np.zeros(60)
+    for col in ['Num1','Num2','Num3','Num4','Num5','Num6']:
+        counts += df[col].value_counts().reindex(all_numbers, fill_value=0).values
+    weights = counts / counts.sum()
+    return weights
+
+def ikili_frekans(df):
+    # İkili sayıların beraber çıkma frekansı matrisi
+    freq_matrix = np.zeros((60,60))
     for _, row in df.iterrows():
-        feature = np.zeros(60)
-        for num in row['Numbers']:
-            feature[num-1] = 1
-        X.append(feature)
-        y.append(feature)  # Çoklu çıktı için aynı
+        numbers = sorted(row[['Num1','Num2','Num3','Num4','Num5','Num6']].values)
+        for i in range(len(numbers)):
+            for j in range(i+1, len(numbers)):
+                freq_matrix[numbers[i]-1, numbers[j]-1] +=1
+                freq_matrix[numbers[j]-1, numbers[i]-1] +=1
+    freq_matrix /= freq_matrix.sum()
+    return freq_matrix
+
+def kosullu_olasilik(df):
+    # P(A|B) = birlikte çıkma / B'nin çıkma frekansı
+    freq_matrix = ikili_frekans(df)
+    single_freq = np.sum(freq_matrix, axis=1)
+    cond_probs = np.divide(freq_matrix.T, single_freq, out=np.zeros_like(freq_matrix.T), where=single_freq!=0).T
+    return cond_probs
+
+def kisitlar_tamammi(tahmin):
+    # En az 2 tek sayı ve 2 çift sayı kısıtı
+    tek_sayilar = sum([1 for n in tahmin if n%2==1])
+    cift_sayilar = sum([1 for n in tahmin if n%2==0])
+    return tek_sayilar >= 2 and cift_sayilar >= 2
+
+def bayesian_model(df, weights):
+    all_numbers = np.arange(1, 61)
+    counts = np.zeros(60)
+    for col in ['Num1','Num2','Num3','Num4','Num5','Num6']:
+        counts += df[col].value_counts().reindex(all_numbers, fill_value=0).values
+
+    # Ağırlıklı frekans (zaman + tekil)
+    weighted_counts = counts * weights
+    probs = weighted_counts / weighted_counts.sum()
+
+    # Basit örnek: Kategorik dağılım
+    with pm.Model() as model:
+        p = pm.Dirichlet('p', a=probs*100 + 1)
+        obs = pm.Categorical('obs', p=p, observed=np.random.choice(all_numbers-1, size=6))
+        trace = pm.sample(500, tune=300, chains=1, progressbar=False, random_seed=42, cores=1)
+    bayes_probs = np.mean(trace['p'], axis=0)
+    return bayes_probs
+
+def markov_model(df):
+    # Markov geçiş matrisi oluştur (basit, ardışık çekilişler)
+    states = np.zeros((60, 60))
+    prev_draws = df[['Num1','Num2','Num3','Num4','Num5','Num6']].values[:-1]
+    next_draws = df[['Num1','Num2','Num3','Num4','Num5','Num6']].values[1:]
+
+    for prev, nxt in zip(prev_draws, next_draws):
+        for p in prev:
+            for n in nxt:
+                states[p-1, n-1] += 1
+
+    # Normalize
+    row_sums = states.sum(axis=1, keepdims=True)
+    row_sums[row_sums==0] = 1
+    trans_matrix = states / row_sums
+    return trans_matrix
+
+def xgboost_model(df):
+    # Her çekiliş için 60 sayıdan one-hot encoding özellik vektörü (0/1)
+    X = []
+    y = []
+    for idx in range(len(df)-1):
+        current_nums = df.iloc[idx][['Num1','Num2','Num3','Num4','Num5','Num6']].values
+        next_nums = df.iloc[idx+1][['Num1','Num2','Num3','Num4','Num5','Num6']].values
+
+        features = np.zeros(60)
+        features[current_nums - 1] = 1
+        X.append(features)
+
+        label = np.zeros(60)
+        label[next_nums - 1] = 1
+        y.append(label)
+
     X = np.array(X)
     y = np.array(y)
-    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
     models = []
     for i in range(60):
         model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss')
-        model.fit(X_train, y_train[:, i])
+        model.fit(X, y[:,i])
         models.append(model)
     return models
 
-def xgboost_predict(models, last_draw):
-    feature = np.zeros(60)
-    for num in last_draw:
-        feature[num-1] = 1
-    preds = np.array([model.predict_proba(feature.reshape(1,-1))[0][1] for model in models])
-    preds /= preds.sum()
-    return preds
-
-# Bayesian Model (basit Dirichlet)
-def bayesian_probs(df):
-    weights = get_weights(df['Date'])
-    freq = np.zeros(60)
-    for i, row in df.iterrows():
-        for num in row['Numbers']:
-            freq[num-1] += weights[i]
-    alpha = freq + 1  # Prior ekle
-    with pm.Model() as model:
-        p = pm.Dirichlet('p', a=alpha)
-        trace = pm.sample(1000, tune=500, chains=1, progressbar=False)
-    bayes_prob = trace.posterior['p'].mean(dim=['chain','draw']).values
-    return bayes_prob
-
-# Markov Zinciri (ikili geçiş olasılıkları)
-def markov_chain(df):
-    weights = get_weights(df['Date'])
-    pair_freq = np.zeros((60,60))
-    for i, row in df.iterrows():
-        nums = row['Numbers']
-        w = weights[i]
-        for a, b in combinations(nums, 2):
-            pair_freq[a-1, b-1] += w
-            pair_freq[b-1, a-1] += w
-    pair_prob = pair_freq / (pair_freq.sum(axis=1, keepdims=True) + 1e-9)
-    return pair_prob
-
-def markov_predict(pair_prob, last_nums, n=6):
-    preds = []
-    used = set()
-    current = last_nums[-1] - 1
-    preds.append(current)
-    used.add(current)
-    for _ in range(n-1):
-        probs = pair_prob[current].copy()
-        for u in used:
-            probs[u] = 0
-        if probs.sum() == 0:
-            candidates = [x for x in range(60) if x not in used]
-            next_num = np.random.choice(candidates)
-        else:
-            probs /= probs.sum()
-            next_num = np.random.choice(60, p=probs)
-        preds.append(next_num)
-        used.add(next_num)
-        current = next_num
-    return np.array(preds)+1
-
-# Tahmin Üret
 def generate_combined_predictions(df, n_preds=1):
-    weights = get_weights(df['Date'])
-    single_prob = weighted_single_probabilities(df)
-    cond_prob = conditional_probabilities(single_prob, pair_frequencies(df))
+    # Zaman bazlı ağırlıklar
+    weights = zaman_agirliklari(pd.to_datetime(df['Date']))
+    # Bayesian
+    bayes_probs = bayesian_model(df, weights)
+    # Markov
+    markov_mat = markov_model(df)
+    # XGBoost
+    xgb_models = xgboost_model(df)
 
-    xgb_models = train_xgboost(df)
-    bayes_prob = bayesian_probs(df)
-    markov_prob = markov_chain(df)
-    last_draw = df.iloc[-1]['Numbers']
+    all_numbers = np.arange(1, 61)
 
     predictions = []
-
+    trials = 10000  # Deneme sayısı tahmin seçimi için
     for _ in range(n_preds):
-        xgb_p = xgboost_predict(xgb_models, last_draw)
-        markov_p = markov_predict(markov_prob, last_draw)
-        # Markov tahminlerini olasılığa çevir (basitleştirilmiş)
-        markov_vec = np.zeros(60)
-        markov_vec[markov_p - 1] = 1 / len(markov_p)
+        best_score = -1
+        best_combination = None
+        for __ in range(trials):
+            # Bayesian ve Markov ağırlıklı seçim
+            bayes_choice = np.random.choice(all_numbers, 6, replace=False, p=bayes_probs)
+            # Markov'dan geçiş olasılıkları
+            markov_probs = np.mean(markov_mat[bayes_choice-1], axis=0)
+            # XGBoost tahminleriyle ağırlık çarpımı
+            xgb_probs = np.array([model.predict_proba(np.eye(60)[i].reshape(1,-1))[0][1] for i, model in enumerate(xgb_models)])
+            combined_probs = (bayes_probs + markov_probs + xgb_probs) / 3
+            combined_probs /= combined_probs.sum()
 
-        # Kombine et (örneğin eşit ağırlık)
-        combined_prob = (single_prob.values + bayes_prob + xgb_p + markov_vec) / 4
-        combined_prob /= combined_prob.sum()
+            try_combination = np.random.choice(all_numbers, 6, replace=False, p=combined_probs)
+            if not kisitlar_tamammi(try_combination):
+                continue
+            # Koşullu olasılık kısıtları eklenebilir burada...
 
-        # En yüksek 6 sayıyı seç
-        chosen = combined_prob.argsort()[-6:][::-1] + 1
-
-        # Kısıt kontrolü
-        if not check_constraints(chosen):
-            # Eğer kısıt tutmazsa rastgele 2 tek 2 çift ekle
-            odds = [n for n in range(1,61) if n%2==1]
-            evens = [n for n in range(1,61) if n%2==0]
-            chosen = np.array(
-                list(np.random.choice(odds, 2, replace=False)) + 
-                list(np.random.choice(evens, 4, replace=False))
-            )
-
-        predictions.append(np.sort(chosen))
-
+            # Skor: Basit frekans toplamı (daha iyi skor mantığı geliştirilebilir)
+            score = sum(weights[num-1] for num in try_combination)
+            if score > best_score:
+                best_score = score
+                best_combination = try_combination
+        predictions.append(sorted(best_combination))
     return predictions
 
-# Streamlit Arayüzü
 def main():
-    st.title("Süper Loto Gelişmiş Tahmin Botu - Entegre Model")
-    uploaded_file = st.file_uploader("CSV dosyanızı yükleyin (Date, Num1~Num6)", type=["csv"])
+    st.title("Süper Loto Gelişmiş Tahmin Botu (Bayesian - Markov - XGBoost - Koşullu Olasılık)")
+    st.write("CSV dosyanızı yükleyin (Date, Num1~Num6 sütunları olmalı)")
 
+    uploaded_file = st.file_uploader("CSV dosyanızı seçin", type=['csv'])
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
-        df['Date'] = pd.to_datetime(df['Date'])
-        df['Numbers'] = df[['Num1','Num2','Num3','Num4','Num5','Num6']].values.tolist()
+        if not all(col in df.columns for col in ['Date','Num1','Num2','Num3','Num4','Num5','Num6']):
+            st.error("CSV dosyanızda 'Date' ve 'Num1'...'Num6' sütunları bulunmalı!")
+            return
 
-        st.success(f"{len(df)} çekiliş yüklendi.")
-        n_preds = st.number_input("Kaç tahmin üretilsin?", 1, 10, 1)
+        n_preds = st.number_input("Kaç tahmin istersiniz?", min_value=1, max_value=10, value=1, step=1)
 
-        if st.button("Tahmin Üret"):
-            with st.spinner("Tahminler hesaplanıyor..."):
-                preds = generate_combined_predictions(df, n_preds)
-            for i, p in enumerate(preds, 1):
-                st.write(f"Tahmin {i}: {', '.join(map(str, p))}")
+        with st.spinner("Tahminler hesaplanıyor, lütfen bekleyiniz..."):
+            preds = generate_combined_predictions(df, n_preds=n_preds)
 
-if __name__=="__main__":
+        st.success("Tahminler hazır!")
+        for i, p in enumerate(preds, 1):
+            st.write(f"{i}. Tahmin: {p}")
+
+if __name__ == "__main__":
     main()
