@@ -1,125 +1,153 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pymc as pm
-import xgboost as xgb
-from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder
+from xgboost import XGBClassifier
+from collections import defaultdict
+from datetime import datetime
 
-st.title("Süper Loto Gelişmiş Tahmin Botu (Bayesian - Markov - XGBoost - Koşullu Olasılık)")
+np.random.seed(42)
 
-uploaded_file = st.file_uploader("CSV dosyanızı yükleyin (Date, Num1~Num6 sütunları)", type="csv")
+# --- 1. Veri Ön İşleme ve Ağırlıklandırma ---
+def preprocess_data(df):
+    df['Date'] = pd.to_datetime(df['Date'])
+    numbers = df.loc[:, 'Num1':'Num6'].values
+    max_date = df['Date'].max()
+    days_diff = (max_date - df['Date']).dt.days
+    time_weights = 1 / (1 + days_diff)  # Daha yeni çekiliş daha yüksek ağırlık
 
-def preprocess(df):
-    df = df.dropna()
-    df['Numbers'] = df[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']].values.tolist()
-    return df
+    freq_weighted = defaultdict(float)
+    for i, row in enumerate(numbers):
+        for num in row:
+            freq_weighted[num] += time_weights.iloc[i]
+    total_weight = sum(freq_weighted.values())
+    freq_weighted = {k: v / total_weight for k, v in freq_weighted.items()}
 
-def bayesian_number_model(df):
-    observations = np.array([num for sublist in df['Numbers'].tolist() for num in sublist]) - 1
-    with pm.Model() as model:
-        alpha = np.ones(60)
-        p = pm.Dirichlet("p", a=alpha)
-        pm.Categorical("obs", p=p, observed=observations)
-        trace = pm.sample(1000, tune=1000, cores=1, progressbar=False)
-    probs = trace.posterior['p'].mean(dim=["chain", "draw"]).values
-    return probs
+    pair_freq = defaultdict(float)
+    for i, row in enumerate(numbers):
+        row_sorted = sorted(row)
+        for i1 in range(len(row_sorted)):
+            for i2 in range(i1 + 1, len(row_sorted)):
+                pair = (row_sorted[i1], row_sorted[i2])
+                pair_freq[pair] += time_weights.iloc[i]
+    total_pair_weight = sum(pair_freq.values())
+    pair_freq = {k: v / total_pair_weight for k, v in pair_freq.items()}
 
-def markov_chain_model(df):
-    transition_matrix = np.ones((60, 60))
-    numbers = df['Numbers'].tolist()
-    for seq in numbers:
-        for i in range(len(seq) - 1):
-            transition_matrix[seq[i] - 1, seq[i + 1] - 1] += 1
-    transition_matrix /= transition_matrix.sum(axis=1, keepdims=True)
-    return transition_matrix
+    cond_prob = {}
+    for (a, b), freq_ab in pair_freq.items():
+        if freq_weighted.get(a, 0) > 0:
+            cond_prob[(a, b)] = freq_ab / freq_weighted[a]
+        else:
+            cond_prob[(a, b)] = 0.0
+        if freq_weighted.get(b, 0) > 0:
+            cond_prob[(b, a)] = freq_ab / freq_weighted[b]
+        else:
+            cond_prob[(b, a)] = 0.0
 
+    return numbers, freq_weighted, pair_freq, cond_prob, time_weights
+
+# --- 2. Bayesian Model ---
+def bayesian_model(freq_weighted, cond_prob):
+    numbers = np.array(list(freq_weighted.keys()))
+    probs = np.array(list(freq_weighted.values()))
+    probs = probs / probs.sum()
+    chosen = np.random.choice(numbers, size=6, replace=False, p=probs)
+    return sorted(chosen)
+
+# --- 3. Markov Zinciri Modeli ---
+def markov_chain_model(numbers, time_weights):
+    transition_counts = np.zeros((60, 60))
+    for row in numbers:
+        sorted_row = sorted(row)
+        for i in range(len(sorted_row) - 1):
+            transition_counts[sorted_row[i] - 1, sorted_row[i + 1] - 1] += 1
+    row_sums = transition_counts.sum(axis=1)
+    transition_probs = np.divide(
+        transition_counts,
+        row_sums[:, None],
+        out=np.zeros_like(transition_counts),
+        where=row_sums[:, None] != 0,
+    )
+    start_probs = row_sums / row_sums.sum()
+    start = np.random.choice(np.arange(60), p=start_probs)
+    result = [start + 1]
+    for _ in range(5):
+        next_prob = transition_probs[result[-1] - 1]
+        if next_prob.sum() == 0:
+            next_num = np.random.choice(60)
+        else:
+            next_num = np.random.choice(np.arange(60), p=next_prob)
+        result.append(next_num + 1)
+    return sorted(result)
+
+# --- 4. XGBoost Modeli ---
 def xgboost_model(df):
-    numbers_list = df['Numbers'].tolist()
-    X, y = [], []
-    for i in range(3, len(numbers_list)):
-        past_3 = numbers_list[i-3:i]
-        flat = [num for sublist in past_3 for num in sublist]
-        X.append(flat)
-        y.append(numbers_list[i])
-    X = np.array(X)
-    y = np.array(y) - 1
-    models = []
-    for i in range(6):
-        m = xgb.XGBClassifier(use_label_encoder=False, eval_metric='mlogloss', n_estimators=50)
-        y_i = y[:, i]
-        X_train, X_val, y_train, y_val = train_test_split(X, y_i, test_size=0.2, random_state=42, stratify=y_i)
-        m.fit(X_train, y_train, eval_set=[(X_val, y_val)], early_stopping_rounds=10, verbose=False)
-        models.append(m)
-    return models
+    features = []
+    for _, row in df.iterrows():
+        feature = np.zeros(60)
+        numbers = row.loc['Num1':'Num6'].values
+        feature[numbers - 1] = 1
+        features.append(feature)
+    X = np.array(features[:-1])
+    y = np.array(features[1:])
+    model = XGBClassifier(use_label_encoder=False, eval_metric="logloss")
+    model.fit(X, y)
+    return model
 
-def conditional_probabilities(df):
-    counts = pd.DataFrame(0, index=range(1,61), columns=range(1,61))
-    singles = pd.Series(0, index=range(1,61))
-    for numbers in df['Numbers']:
-        for n in numbers:
-            singles[n] += 1
-        for i in range(len(numbers)):
-            for j in range(i+1, len(numbers)):
-                counts.at[numbers[i], numbers[j]] += 1
-                counts.at[numbers[j], numbers[i]] += 1
-    singles = singles.replace(0, 1)
-    cond_probs = counts.div(singles, axis=0)
-    return cond_probs, singles / singles.sum()
+# --- 5. Kısıtlar ---
+def check_constraints(nums):
+    odd_count = sum(n % 2 == 1 for n in nums)
+    even_count = 6 - odd_count
+    return odd_count >= 2 and even_count >= 2
 
-def combined_score(numbers, single_prob, cond_prob, bayes_probs, markov_probs, xgb_models, prev_numbers):
-    prob_cond = 1.0
-    for n in numbers:
-        prob_cond *= single_prob[n]
-    for i in range(len(numbers)):
-        for j in range(i + 1, len(numbers)):
-            prob_cond *= cond_prob.at[numbers[i], numbers[j]]
-    prob_bayes = np.prod(bayes_probs[numbers])
-    prob_markov = 1.0
-    for n in numbers:
-        prob_markov *= markov_probs[prev_numbers[n] - 1, n]
-    flat_input = []
-    for _ in range(3):  # son 3 çekiliş için aynı prev_numbers kullanıldı
-        flat_input.extend(prev_numbers)
-    X_input = np.array(flat_input).reshape(1, -1)
-    prob_xgb = 1.0
-    for i, model in enumerate(xgb_models):
-        preds = model.predict_proba(X_input)[0]
-        prob_xgb *= preds[numbers[i]]
-    score_log = np.log(prob_cond + 1e-12) + np.log(prob_bayes + 1e-12) + np.log(prob_markov + 1e-12) + np.log(prob_xgb + 1e-12)
-    score = np.exp(score_log)
-    return score
+# --- 6. Ensemble Tahmin ---
+def ensemble_prediction(freq_weighted, cond_prob, numbers, time_weights, model, n_preds=1):
+    preds = []
+    attempts = 0
+    while len(preds) < n_preds and attempts < n_preds * 10:
+        bayes_pred = bayesian_model(freq_weighted, cond_prob)
+        markov_pred = markov_chain_model(numbers, time_weights)
 
-def generate_predictions(df, n_preds=1, trials=10000):
-    bayes_probs = bayesian_number_model(df)
-    markov_probs = markov_chain_model(df)
-    xgb_models = xgboost_model(df)
-    cond_prob, single_prob = conditional_probabilities(df)
-    prev_numbers = df['Numbers'].iloc[-1]
+        feature = np.zeros(60)
+        feature[bayes_pred - 1] = 1
 
-    candidates = []
-    while len(candidates) < trials:
-        candidate = np.random.choice(range(1, 61), size=6, replace=False)
-        # Kısıtlar: en az 2 tek, 2 çift sayı
-        if (sum(n % 2 == 0 for n in candidate) < 2) or (sum(n % 2 == 1 for n in candidate) < 2):
-            continue
-        score = combined_score(candidate, single_prob, cond_prob, bayes_probs, markov_probs, xgb_models, prev_numbers)
-        candidates.append((score, candidate))
-    candidates.sort(reverse=True, key=lambda x: x[0])
-    return [list(c[1]) for c in candidates[:n_preds]]
+        xgb_pred_probs = model.predict_proba(feature.reshape(1, -1))[0]
+        xgb_pred = np.argsort(xgb_pred_probs)[-6:] + 1
 
+        combined = sorted(set(bayes_pred) | set(markov_pred) | set(xgb_pred))
+
+        if len(combined) > 6:
+            combined = np.random.choice(combined, 6, replace=False).tolist()
+
+        if check_constraints(combined):
+            preds.append(sorted(combined))
+        attempts += 1
+
+    return preds
+
+# --- 7. Streamlit Arayüzü ---
 def main():
-    if uploaded_file is not None:
+    st.title(
+        "Süper Loto Gelişmiş Tahmin Botu (Bayesian - Markov - XGBoost - Koşullu Olasılık - Kısıtlar)"
+    )
+    uploaded_file = st.file_uploader(
+        "CSV dosyanızı yükleyin (Date, Num1~Num6 sütunları)", type=["csv"]
+    )
+
+    if uploaded_file:
         df = pd.read_csv(uploaded_file)
-        df = preprocess(df)
         st.success("Veri yüklendi!")
-        n_preds = st.number_input("Kaç tahmin istersiniz?", min_value=1, max_value=10, value=1, step=1)
-        if st.button("Tahminleri Hesapla"):
-            with st.spinner("Tahminler hesaplanıyor, lütfen bekleyin..."):
-                preds = generate_predictions(df, n_preds=n_preds, trials=5000)
-            for i, p in enumerate(preds, 1):
-                st.write(f"Tahmin {i}: {sorted(p)}")
-    else:
-        st.info("Lütfen CSV dosyasını yükleyin.")
+
+        n_preds = st.number_input("Kaç tahmin istersiniz?", min_value=1, max_value=10, value=1)
+
+        with st.spinner("Tahminler hesaplanıyor..."):
+            numbers, freq_weighted, pair_freq, cond_prob, time_weights = preprocess_data(df)
+            model = xgboost_model(df)
+            preds = ensemble_prediction(freq_weighted, cond_prob, numbers, time_weights, model, n_preds=n_preds)
+
+        st.subheader("Tahminler")
+        for i, pred in enumerate(preds):
+            st.write(f"{i+1}. Tahmin: {sorted(pred)}")
 
 if __name__ == "__main__":
     main()
