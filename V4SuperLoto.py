@@ -223,4 +223,8 @@ def main():
                 preds = combined_predictions(df, single_prob, cond_prob, n_preds=n_preds)
 
             st.success("Tahminler hazır!")
-            for i, (combo
+            for i, (combo, prob) in enumerate(preds, 1):
+                st.write(f"{i}. Tahmin: {', '.join(map(str, combo))}  (Olasılık: {prob:.6e})")
+
+if __name__ == "__main__":
+    main()
