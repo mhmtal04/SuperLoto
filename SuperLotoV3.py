@@ -106,8 +106,8 @@ def main():
         df['Date'] = pd.to_datetime(df['Date'])
         df['Numbers'] = df[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']].values.tolist()
 
-        st.success("Veriler yüklendi. İlk 20 satır gösteriliyor:")
-        st.dataframe(df.head(20))
+        st.success(f"Veriler yüklendi. Toplam satır sayısı: {len(df)}")
+st.write(df)
 
         with st.spinner("Olasılıklar hesaplanıyor..."):
             single_prob = weighted_single_probabilities(df)
