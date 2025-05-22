@@ -1,154 +1,143 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import OneHotEncoder
-from xgboost import XGBClassifier
-from collections import defaultdict
-from datetime import datetime
+import random
+import pymc as pm
+from sklearn.model_selection import train_test_split
+import xgboost as xgb
 
-np.random.seed(42)
+# --- Fonksiyonlar ---
 
-# --- 1. Veri Ön İşleme ve Ağırlıklandırma ---
-def preprocess_data(df):
-    df['Date'] = pd.to_datetime(df['Date'])
-    numbers = df.loc[:, 'Num1':'Num6'].values
-    max_date = df['Date'].max()
-    days_diff = (max_date - df['Date']).dt.days
-    time_weights = 1 / (1 + days_diff)  # Daha yeni çekiliş daha yüksek ağırlık
+def zaman_agirliklari(df):
+    n = len(df)
+    return np.linspace(1, 2, n)
 
-    freq_weighted = defaultdict(float)
-    for i, row in enumerate(numbers):
-        for num in row:
-            freq_weighted[num] += time_weights.iloc[i]
-    total_weight = sum(freq_weighted.values())
-    freq_weighted = {k: v / total_weight for k, v in freq_weighted.items()}
+def tekil_agirlikli_frekans(df, weights):
+    freq = np.zeros(60)
+    for i, row in df.iterrows():
+        for num in row[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']]:
+            freq[num-1] += weights[i]
+    return freq / np.sum(freq)
 
-    pair_freq = defaultdict(float)
-    for i, row in enumerate(numbers):
-        row_sorted = sorted(row)
-        for i1 in range(len(row_sorted)):
-            for i2 in range(i1 + 1, len(row_sorted)):
-                pair = (row_sorted[i1], row_sorted[i2])
-                pair_freq[pair] += time_weights.iloc[i]
-    total_pair_weight = sum(pair_freq.values())
-    pair_freq = {k: v / total_pair_weight for k, v in pair_freq.items()}
+def ikili_frekanslar(df, weights):
+    pairs = np.zeros((60, 60))
+    for i, row in df.iterrows():
+        nums = row[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']].values - 1
+        w = weights[i]
+        for a in nums:
+            for b in nums:
+                if a != b:
+                    pairs[a, b] += w
+    pairs /= pairs.sum(axis=1, keepdims=True) + 1e-8
+    return pairs
 
-    cond_prob = {}
-    for (a, b), freq_ab in pair_freq.items():
-        if freq_weighted.get(a, 0) > 0:
-            cond_prob[(a, b)] = freq_ab / freq_weighted[a]
-        else:
-            cond_prob[(a, b)] = 0.0
-        if freq_weighted.get(b, 0) > 0:
-            cond_prob[(b, a)] = freq_ab / freq_weighted[b]
-        else:
-            cond_prob[(b, a)] = 0.0
+def bayesian_model(df, weights):
+    freqs = tekil_agirlikli_frekans(df, weights)
+    with pm.Model() as model:
+        p = pm.Dirichlet('p', a=np.ones(60))
+        obs = pm.Multinomial('obs', n=6, p=p, observed=np.random.multinomial(6, freqs))
+        trace = pm.sample(500, tune=500, progressbar=False, chains=1)
+    bayes_probs = trace.posterior['p'].mean(dim=('chain', 'draw')).values
+    return bayes_probs
 
-    return numbers, freq_weighted, pair_freq, cond_prob, time_weights
-
-# --- 2. Bayesian Model ---
-def bayesian_model(freq_weighted, cond_prob):
-    numbers = np.array(list(freq_weighted.keys()))
-    probs = np.array(list(freq_weighted.values()))
-    probs = probs / probs.sum()
-    chosen = np.random.choice(numbers, size=6, replace=False, p=probs)
-    return sorted(chosen)
-
-# --- 3. Markov Zinciri Modeli ---
-def markov_chain_model(numbers, time_weights):
-    transition_counts = np.zeros((60, 60))
-    for row in numbers:
-        sorted_row = sorted(row)
-        for i in range(len(sorted_row) - 1):
-            transition_counts[sorted_row[i] - 1, sorted_row[i + 1] - 1] += 1
-    row_sums = transition_counts.sum(axis=1)
-    transition_probs = np.divide(
-        transition_counts,
-        row_sums[:, None],
-        out=np.zeros_like(transition_counts),
-        where=row_sums[:, None] != 0,
-    )
-    start_probs = row_sums / row_sums.sum()
-    start = np.random.choice(np.arange(60), p=start_probs)
-    result = [start + 1]
-    for _ in range(5):
-        next_prob = transition_probs[result[-1] - 1]
+def markov_tahmin(df, weights, ikili_freq, n=6):
+    tekil_probs = tekil_agirlikli_frekans(df, weights)
+    seq = []
+    first = np.random.choice(np.arange(60), p=tekil_probs)
+    seq.append(first)
+    for _ in range(n-1):
+        last = seq[-1]
+        next_prob = ikili_freq[last].copy()
+        for s in seq:
+            next_prob[s] = 0
         if next_prob.sum() == 0:
-            next_num = np.random.choice(60)
+            candidates = [x for x in range(60) if x not in seq]
+            next_num = random.choice(candidates)
         else:
+            next_prob /= next_prob.sum()
             next_num = np.random.choice(np.arange(60), p=next_prob)
-        result.append(next_num + 1)
-    return sorted(result)
+        seq.append(next_num)
+    return np.array(seq) + 1
 
-# --- 4. XGBoost Modeli ---
 def xgboost_model(df):
-    features = []
-    for _, row in df.iterrows():
+    X, y = [], []
+    for i, row in df.iterrows():
         feature = np.zeros(60)
-        numbers = row.loc['Num1':'Num6'].values
-       for num in numbers:
-    feature[num - 1] = 1
-        features.append(feature)
-    X = np.array(features[:-1])
-    y = np.array(features[1:])
-    model = XGBClassifier(use_label_encoder=False, eval_metric="logloss")
-    model.fit(X, y)
-    return model
+        for num in row[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']]:
+            feature[num-1] = 1
+        X.append(feature)
+        y.append(feature)
+    X = np.array(X)
+    y = np.array(y)
+    X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42)
+    models = []
+    for i in range(60):
+        model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+        model.fit(X_train, y_train[:, i])
+        models.append(model)
+    return models
 
-# --- 5. Kısıtlar ---
-def check_constraints(nums):
-    odd_count = sum(n % 2 == 1 for n in nums)
-    even_count = 6 - odd_count
-    return odd_count >= 2 and even_count >= 2
-
-# --- 6. Ensemble Tahmin ---
-def ensemble_prediction(freq_weighted, cond_prob, numbers, time_weights, model, n_preds=1):
+def xgboost_tahmin(models, son_cekilis):
+    feature = np.zeros(60)
+    for num in son_cekilis:
+        feature[num-1] = 1
     preds = []
-    attempts = 0
-    while len(preds) < n_preds and attempts < n_preds * 10:
-        bayes_pred = bayesian_model(freq_weighted, cond_prob)
-        markov_pred = markov_chain_model(numbers, time_weights)
+    for model in models:
+        pred = model.predict_proba(feature.reshape(1, -1))[0][1]
+        preds.append(pred)
+    preds = np.array(preds)
+    preds /= preds.sum()
+    tahmin = preds.argsort()[-6:][::-1] + 1
+    return tahmin
 
-        feature = np.zeros(60)
-        feature[bayes_pred - 1] = 1
+def kisitlari_kontrol_et(sayi_listesi):
+    tekler = [s for s in sayi_listesi if s % 2 == 1]
+    ciftler = [s for s in sayi_listesi if s % 2 == 0]
+    return len(tekler) >= 2 and len(ciftler) >= 2
 
-        xgb_pred_probs = model.predict_proba(feature.reshape(1, -1))[0]
-        xgb_pred = np.argsort(xgb_pred_probs)[-6:] + 1
+def tahmin_uret(df, n_tahmin=1):
+    weights = zaman_agirliklari(df)
+    ikili_freq = ikili_frekanslar(df, weights)
+    bayes_probs = bayesian_model(df, weights)
+    xgb_models = xgboost_model(df)
+    son_cekilis = df.iloc[-1][['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']].values
 
-        combined = sorted(set(bayes_pred) | set(markov_pred) | set(xgb_pred))
+    tahminler = []
+    deneme_limiti = 1000
+    for _ in range(n_tahmin):
+        for _ in range(deneme_limiti):
+            markov_sayi = markov_tahmin(df, weights, ikili_freq)
+            xgb_sayi = xgboost_tahmin(xgb_models, son_cekilis)
+            bayes_idx = bayes_probs.argsort()[-6:][::-1] + 1
+            combined = (np.array(markov_sayi) + np.array(xgb_sayi) + bayes_idx) / 3
+            combined = np.round(combined).astype(int)
+            combined = np.clip(combined, 1, 60)
+            if kisitlari_kontrol_et(combined):
+                tahminler.append(np.unique(combined))
+                break
+        else:
+            tahminler.append(np.random.choice(np.arange(1,61), size=6, replace=False))
+    return tahminler
 
-        if len(combined) > 6:
-            combined = np.random.choice(combined, 6, replace=False).tolist()
+# --- Streamlit Arayüzü ---
 
-        if check_constraints(combined):
-            preds.append(sorted(combined))
-        attempts += 1
+st.title("Süper Loto Gelişmiş Tahmin Botu")
 
-    return preds
+uploaded_file = st.file_uploader("CSV dosyanızı yükleyin (Date, Num1~Num6 sütunları)", type=["csv"])
 
-# --- 7. Streamlit Arayüzü ---
-def main():
-    st.title(
-        "Süper Loto Gelişmiş Tahmin Botu (Bayesian - Markov - XGBoost - Koşullu Olasılık - Kısıtlar)"
-    )
-    uploaded_file = st.file_uploader(
-        "CSV dosyanızı yükleyin (Date, Num1~Num6 sütunları)", type=["csv"]
-    )
+if uploaded_file is not None:
+    df = pd.read_csv(uploaded_file, parse_dates=['Date'])
+    if set(['Date', 'Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']).issubset(df.columns):
+        st.success(f"Veri yüklendi! Toplam çekiliş: {len(df)}")
+        n_tahmin = st.number_input("Kaç tahmin istersiniz?", min_value=1, max_value=10, value=1)
+        if st.button("Tahminleri Üret"):
+            with st.spinner("Tahminler hesaplanıyor... Bu biraz zaman alabilir."):
+                tahminler = tahmin_uret(df, n_tahmin)
+            st.success("Tahminler hazır!")
+            for i, t in enumerate(tahminler):
+                st.write(f"Tahmin {i+1}: {sorted(t)}")
+    else:
+        st.error("CSV dosyasında gerekli sütunlar yok! (Date, Num1~Num6)")
 
-    if uploaded_file:
-        df = pd.read_csv(uploaded_file)
-        st.success("Veri yüklendi!")
-
-        n_preds = st.number_input("Kaç tahmin istersiniz?", min_value=1, max_value=10, value=1)
-
-        with st.spinner("Tahminler hesaplanıyor..."):
-            numbers, freq_weighted, pair_freq, cond_prob, time_weights = preprocess_data(df)
-            model = xgboost_model(df)
-            preds = ensemble_prediction(freq_weighted, cond_prob, numbers, time_weights, model, n_preds=n_preds)
-
-        st.subheader("Tahminler")
-        for i, pred in enumerate(preds):
-            st.write(f"{i+1}. Tahmin: {sorted(pred)}")
-
-if __name__ == "__main__":
-    main()
+else:
+    st.info("Lütfen CSV dosyanızı yükleyin.")
