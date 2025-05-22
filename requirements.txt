@@ -7,3 +7,4 @@ selenium
 webdriver-manager
 xgboost
 scikit-learn
+pymc
