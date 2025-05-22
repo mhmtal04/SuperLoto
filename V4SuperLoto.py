@@ -1,72 +1,200 @@
-import yfinance as yf
-import pandas as pd
-import numpy as np
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error
 import streamlit as st
-import datetime
+import csv
+import numpy as np
+from collections import Counter, defaultdict
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+from itertools import combinations
 
-st.set_page_config(page_title="Hisse Tahmin Uygulaması", layout="centered")
-st.title("📈 Yarınki Fiyat ve Yüzde Tahmini")
-
-symbol = st.text_input("Hisse kodunu girin (örnek: THYAO)", "")
-
-# Tarih aralığı seçimi
-col1, col2 = st.columns(2)
-with col1:
-    start_date = st.date_input("Başlangıç tarihi", datetime.date.today() - datetime.timedelta(days=180))
-with col2:
-    end_date = st.date_input("Bitiş tarihi", datetime.date.today() + datetime.timedelta(days=1))
-
-if symbol:
-    symbol = symbol.upper() + ".IS"
-    st.write(f"**{symbol}** verisi indiriliyor...")
-    data = yf.download(symbol, start=start_date, end=end_date)
-
-    if data.empty:
-        st.warning("Veri indirilemedi. Lütfen geçerli bir hisse kodu veya tarih aralığı girin.")
-    else:
-        # Anlık fiyat (yaklaşık) al
-        ticker = yf.Ticker(symbol)
+# -------------------
+# 1. CSV'den çekiliş verisi yükleme
+# -------------------
+def load_draws_from_csv(file):
+    draws = []
+    reader = csv.reader(file)
+    for row in reader:
         try:
-            current_price = float(ticker.info["currentPrice"])
-            st.info(f"Gerçek Zamanlı Fiyat: {current_price:.2f} TL")
-        except:
-            st.warning("Gerçek zamanlı fiyat alınamadı.")
-            current_price = data["Close"].dropna().iloc[-1]
+            draw = list(map(int, row))
+            if len(draw) == 6:
+                draws.append(draw)
+        except ValueError:
+            continue
+    return draws
 
-        # Kapanış fiyatı grafiği
-        st.line_chart(data["Close"], use_container_width=True)
+# -------------------
+# 2. Zaman Bazlı Ağırlıklı Frekans Hesaplama
+# -------------------
+def weighted_frequency(draws, max_number=60):
+    weights = np.linspace(1, 2, len(draws))  # eski veriye 1, yeni veriye 2 ağırlık
+    freq = Counter()
+    for w, draw in zip(weights, draws):
+        for num in draw:
+            freq[num] += w
+    total = sum(freq.values())
+    return {num: freq.get(num, 0) / total for num in range(1, max_number + 1)}
 
-        # Özellikleri hazırla
-        data["MA5"] = data["Close"].rolling(window=5).mean()
-        data["MA10"] = data["Close"].rolling(window=10).mean()
-        data["Target"] = data["Close"].shift(-1)  # Yarınki kapanış tahmini için
-        data = data.dropna()
+# -------------------
+# 3. İkili sayı frekansları ve koşullu olasılıklar
+# -------------------
+def pair_frequencies(draws):
+    pair_counts = defaultdict(int)
+    single_counts = Counter()
+    for draw in draws:
+        for num in draw:
+            single_counts[num] += 1
+        for i in range(len(draw)):
+            for j in range(i+1, len(draw)):
+                pair = tuple(sorted([draw[i], draw[j]]))
+                pair_counts[pair] += 1
+    return pair_counts, single_counts
 
-        if data.shape[0] < 20:
-            st.warning("Yeterli veri yok. Daha uzun zaman dilimi seçin.")
-        else:
-            features = ["Close", "MA5", "MA10"]
-            X = data[features]
-            y = data["Target"]
+def conditional_probabilities(pair_counts, single_counts):
+    cond_probs = {}
+    for (a,b), count in pair_counts.items():
+        cond_probs[(a,b)] = count / single_counts[a] if single_counts[a] > 0 else 0
+        cond_probs[(b,a)] = count / single_counts[b] if single_counts[b] > 0 else 0
+    return cond_probs
 
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-            model = RandomForestRegressor()
-            model.fit(X_train, y_train)
+# -------------------
+# 4. Markov Zinciri Geçiş Olasılıkları
+# -------------------
+def compute_markov_probs(draws):
+    transitions = defaultdict(list)
+    for draw in draws:
+        for i in range(len(draw)-1):
+            curr_num = draw[i]
+            next_num = draw[i+1]
+            transitions[curr_num].append(next_num)
 
-            preds = model.predict(X_test)
-            mae = mean_absolute_error(y_test, preds)
-            st.success(f"Model Ortalama Hata: ±{mae:.2f} TL")
+    markov_probs = {}
+    for curr_num, next_nums in transitions.items():
+        count = Counter(next_nums)
+        total = sum(count.values())
+        markov_probs[curr_num] = {num: cnt / total for num, cnt in count.items()}
+    return markov_probs
 
-            latest_data = X.tail(1)
-            prediction = model.predict(latest_data)[0]
-            percent_change = ((prediction - current_price) / current_price) * 100
+# -------------------
+# 5. Bayesian Güncelleme
+# -------------------
+def bayesian_update(prior_probs, observed_counts, total_observations):
+    posterior_probs = {}
+    for num in prior_probs.keys():
+        likelihood = observed_counts.get(num, 0) / total_observations if total_observations > 0 else 0
+        posterior_probs[num] = likelihood * prior_probs[num]
+    total = sum(posterior_probs.values())
+    if total == 0:
+        return prior_probs
+    return {k: v / total for k, v in posterior_probs.items()}
 
-            st.subheader("Tahmin Sonucu:")
-            st.write(f"Yarınki kapanış fiyatı tahmini: **{prediction:.2f} TL**")
-            if percent_change >= 0:
-                st.write(f"Beklenen yüzde değişim: **%+{percent_change:.2f}**")
-            else:
-                st.write(f"Beklenen yüzde değişim: **{percent_change:.2f}%**")
+# -------------------
+# 6. XGBoost Hazırlık ve Eğitim
+# -------------------
+def prepare_features(draws, max_number=60):
+    X = []
+    y = []
+
+    for i in range(len(draws) - 1):
+        current_draw = draws[i]
+        next_draw = draws[i + 1]
+
+        features = [1 if num in current_draw else 0 for num in range(1, max_number + 1)]
+
+        for num in range(1, max_number + 1):
+            label = 1 if num in next_draw else 0
+            X.append(features)
+            y.append(label)
+
+    return np.array(X), np.array(y)
+
+def train_xgboost(X, y):
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+    model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+    model.fit(X_train, y_train)
+
+    preds = model.predict(X_val)
+    acc = accuracy_score(y_val, preds)
+    return model, acc
+
+def predict_xgboost(model, last_draw, max_number=60):
+    features = [1 if num in last_draw else 0 for num in range(1, max_number + 1)]
+    proba = model.predict_proba([features])[0]
+    prob_dict = {num+1: proba[num] for num in range(max_number)}
+    return prob_dict
+
+# -------------------
+# 7. Tahmin oluşturma ve kısıtlar (en az 2 tek, 2 çift)
+# -------------------
+def is_valid_combination(numbers):
+    evens = sum(1 for n in numbers if n % 2 == 0)
+    odds = len(numbers) - evens
+    return odds >= 2 and evens >= 2
+
+def combined_prediction(draws, model_xgb, alpha=0.4, beta=0.3, gamma=0.3):
+    max_number = 60
+    last_draw = draws[-1]
+
+    prior_probs = weighted_frequency(draws, max_number)
+    pair_counts, single_counts = pair_frequencies(draws)
+    cond_probs = conditional_probabilities(pair_counts, single_counts)
+    observed_counts = Counter(last_draw)
+    total_obs = len(last_draw)
+    bayes_probs = bayesian_update(prior_probs, observed_counts, total_obs)
+    markov_probs = compute_markov_probs(draws)
+    xgb_probs = predict_xgboost(model_xgb, last_draw, max_number)
+
+    combined_scores = {}
+
+    for num in range(1, max_number + 1):
+        markov_prob = np.mean(list(markov_probs.get(num, {}).values())) if markov_probs.get(num) else 0
+        cond_prob = 0
+        for ld_num in last_draw:
+            cond_prob += cond_probs.get((ld_num, num), 0)
+        cond_prob /= len(last_draw)
+        combined_scores[num] = (alpha * xgb_probs.get(num, 0) +
+                                beta * bayes_probs.get(num, 0) +
+                                gamma * (0.5*markov_prob + 0.5*cond_prob))
+
+    top_candidates = sorted(combined_scores, key=combined_scores.get, reverse=True)[:20]
+
+    valid_combos = []
+    for combo in combinations(top_candidates, 6):
+        if is_valid_combination(combo):
+            valid_combos.append((combo, sum(combined_scores[n] for n in combo)))
+    if not valid_combos:
+        best_6 = sorted(combined_scores, key=combined_scores.get, reverse=True)[:6]
+        return best_6, combined_scores
+
+    best_combo = max(valid_combos, key=lambda x: x[1])[0]
+    return best_combo, combined_scores
+
+# -------------------
+# Streamlit Arayüzü
+# -------------------
+def main():
+    st.title("Süper Loto Tahmin Modeli (V3)")
+
+    uploaded_file = st.file_uploader("Çekiliş verisi CSV dosyasını yükleyin", type=['csv'])
+
+    if uploaded_file is not None:
+        draws = load_draws_from_csv(uploaded_file)
+        if len(draws) < 2:
+            st.warning("Yeterli çekiliş verisi yok. En az 2 çekiliş gereklidir.")
+            return
+
+        st.write(f"Toplam çekiliş sayısı: {len(draws)}")
+        X, y = prepare_features(draws)
+        with st.spinner("Model eğitiliyor..."):
+            model_xgb, acc = train_xgboost(X, y)
+        st.success(f"Model doğruluk skoru (validation): {acc:.4f}")
+
+        with st.spinner("Tahmin yapılıyor..."):
+            predicted_numbers, combined_scores = combined_prediction(draws, model_xgb)
+
+        st.write("Tahmin edilen sayılar:", predicted_numbers)
+        st.write("İlk 10 olasılık skoru:")
+        for num, score in sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)[:10]:
+            st.write(f"Sayı {num}: {score:.4f}")
+
+if __name__ == "__main__":
+    main()
