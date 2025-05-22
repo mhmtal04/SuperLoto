@@ -108,8 +108,7 @@ def main():
 
         st.success(f"Veriler yüklendi. Toplam satır sayısı: {len(df)}")
 st.write(df)
-
-        with st.spinner("Olasılıklar hesaplanıyor..."):
+     with st.spinner("Olasılıklar hesaplanıyor..."):
             single_prob = weighted_single_probabilities(df)
             pair_freq = pair_frequencies(df)
             cond_prob = conditional_probabilities(single_prob, pair_freq)
