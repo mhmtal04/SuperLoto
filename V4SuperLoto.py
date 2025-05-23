@@ -6,7 +6,7 @@ from datetime import datetime
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.naive_bayes import GaussianNB
 
-# ------------------------------ Yardımcı Fonksiyonlar ------------------------------
+# ------------------ Yardımcı Fonksiyonlar ------------------
 
 def get_weights(dates):
     dates = pd.to_datetime(dates)
@@ -20,7 +20,7 @@ def check_constraints(numbers):
     even_count = len(numbers) - odd_count
     return odd_count >= 2 and even_count >= 2
 
-# ------------------------------ Olasılık Hesaplamaları ------------------------------
+# ------------------ Olasılık Hesaplamaları ------------------
 
 def weighted_single_probabilities(df):
     weights = get_weights(df['Date'])
@@ -54,7 +54,7 @@ def conditional_probabilities(single_prob, pair_freq):
                 cond_prob.at[a, b] = pair_freq.at[a, b] / freq_a
     return cond_prob
 
-# ------------------------------ Makine Öğrenimi Modelleri ------------------------------
+# ------------------ Makine Öğrenimi ------------------
 
 def train_naive_bayes(df):
     X = np.repeat(df.index.values.reshape(-1, 1), 6, axis=0)
@@ -81,12 +81,13 @@ def markov_chain(df):
     transition_probs = transitions / transitions.sum(axis=1, keepdims=True)
     return transition_probs
 
-# ------------------------------ Tahmin Üret ------------------------------
+# ------------------ Tahmin Üret ------------------
 
 def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, n_preds=1, trials=5000):
     predictions = []
     numbers_list = list(range(1, 61))
     single_probs_list = single_prob.values
+
     for _ in range(n_preds):
         best_combo = None
         best_score = -1
@@ -95,6 +96,7 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
             chosen = np.sort(chosen)
             if not check_constraints(chosen):
                 continue
+
             combo_score = 1.0
             for i in range(6):
                 combo_score *= single_prob[chosen[i]]
@@ -102,22 +104,29 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
                     combo_score *= cond_prob.at[chosen[i], chosen[j]]
 
             X_test = np.array([[len(df) + 1]])
-            nb_score = np.mean([nb_model.predict_proba(X_test)[0][n - 1] for n in chosen])
+            classes = nb_model.classes_
+            probs = nb_model.predict_proba(X_test)[0]
+
+            nb_score = np.mean([probs[np.where(classes == n)[0][0]] if n in classes else 0 for n in chosen])
             gb_pred = gb_model.predict(X_test)[0]
             markov_score = np.mean([markov_probs[a].mean() for a in chosen if a < len(markov_probs)])
 
             final_score = combo_score * (1 + nb_score) * (1 + gb_pred / 60.0) * (1 + markov_score)
+
             if final_score > best_score:
                 best_score = final_score
                 best_combo = chosen
+
         if best_combo is not None:
             predictions.append((best_combo, best_score))
+
     return predictions
 
-# ------------------------------ Streamlit Arayüz ------------------------------
+# ------------------ Streamlit Arayüzü ------------------
 
 def main():
     st.title("Süper Loto | Gelişmiş Tahmin Botu v4")
+
     uploaded_file = st.file_uploader("CSV dosyanızı yükleyin (Date, Num1~Num6)", type=["csv"])
 
     if uploaded_file is not None:
@@ -136,7 +145,7 @@ def main():
             gb_model = train_gradient_boost(df)
             markov_probs = markov_chain(df)
 
-        n_preds = st.slider("Kaç tahmin üretilsin?", min_value=1, max_value=10, value=3)
+        n_preds = st.number_input("Kaç tahmin üretmek istiyorsunuz?", min_value=1, max_value=20, value=3, step=1)
 
         if st.button("Tahminleri Hesapla"):
             with st.spinner("Tahminler hesaplanıyor..."):
