@@ -5,7 +5,6 @@ from itertools import combinations
 from datetime import datetime
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.naive_bayes import GaussianNB
-from sklearn.preprocessing import MultiLabelBinarizer
 
 # ------------------------------ Yardımcı Fonksiyonlar ------------------------------
 
@@ -58,19 +57,17 @@ def conditional_probabilities(single_prob, pair_freq):
 # ------------------------------ Makine Öğrenimi Modelleri ------------------------------
 
 def train_naive_bayes(df):
-    mlb = MultiLabelBinarizer(classes=range(1, 61))
-    X = df.index.values.reshape(-1, 1)
-    Y = mlb.fit_transform(df['Numbers'])
+    X = np.repeat(df.index.values.reshape(-1, 1), 6, axis=0)
+    y = np.array([n for row in df['Numbers'] for n in row])
     model = GaussianNB()
-    model.fit(X, Y)
-    return model, mlb
+    model.fit(X, y)
+    return model
 
 def train_gradient_boost(df):
-    X = df.index.values.reshape(-1, 1)
-    y = [int(n) for row in df['Numbers'] for n in row]
-    X_boost = np.repeat(X, 6, axis=0)
+    X = np.repeat(df.index.values.reshape(-1, 1), 6, axis=0)
+    y = [n for row in df['Numbers'] for n in row]
     model = GradientBoostingRegressor()
-    model.fit(X_boost, y)
+    model.fit(X, y)
     return model
 
 def markov_chain(df):
@@ -86,7 +83,7 @@ def markov_chain(df):
 
 # ------------------------------ Tahmin Üret ------------------------------
 
-def generate_predictions(df, single_prob, cond_prob, nb_model, mlb, gb_model, markov_probs, n_preds=1, trials=5000):
+def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, n_preds=1, trials=5000):
     predictions = []
     numbers_list = list(range(1, 61))
     single_probs_list = single_prob.values
@@ -98,17 +95,18 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, mlb, gb_model, ma
             chosen = np.sort(chosen)
             if not check_constraints(chosen):
                 continue
-            # Kombine skorlama
             combo_score = 1.0
             for i in range(6):
                 combo_score *= single_prob[chosen[i]]
                 for j in range(i + 1, 6):
                     combo_score *= cond_prob.at[chosen[i], chosen[j]]
+
             X_test = np.array([[len(df) + 1]])
-            nb_pred = nb_model.predict_proba(X_test)[0]
+            nb_score = np.mean([nb_model.predict_proba(X_test)[0][n - 1] for n in chosen])
             gb_pred = gb_model.predict(X_test)[0]
             markov_score = np.mean([markov_probs[a].mean() for a in chosen if a < len(markov_probs)])
-            final_score = combo_score * (1 + nb_pred.mean()) * (1 + gb_pred / 60.0) * (1 + markov_score)
+
+            final_score = combo_score * (1 + nb_score) * (1 + gb_pred / 60.0) * (1 + markov_score)
             if final_score > best_score:
                 best_score = final_score
                 best_combo = chosen
@@ -134,7 +132,7 @@ def main():
             single_prob = weighted_single_probabilities(df)
             pair_freq = pair_frequencies(df)
             cond_prob = conditional_probabilities(single_prob, pair_freq)
-            nb_model, mlb = train_naive_bayes(df)
+            nb_model = train_naive_bayes(df)
             gb_model = train_gradient_boost(df)
             markov_probs = markov_chain(df)
 
@@ -142,7 +140,7 @@ def main():
 
         if st.button("Tahminleri Hesapla"):
             with st.spinner("Tahminler hesaplanıyor..."):
-                preds = generate_predictions(df, single_prob, cond_prob, nb_model, mlb, gb_model, markov_probs, n_preds=n_preds)
+                preds = generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, n_preds=n_preds)
             st.success("Tahminler hazır!")
             for i, (comb, score) in enumerate(preds):
                 st.write(f"{i+1}. Tahmin: {', '.join(map(str, comb))} | Skor: {score:.4e}")
