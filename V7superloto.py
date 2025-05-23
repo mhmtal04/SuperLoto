@@ -133,9 +133,9 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
             gb_pred = gb_model.predict(X_test)[0]
             markov_score = np.mean([markov_probs[a].mean() if a < markov_probs.shape[0] else 0 for a in chosen])
 
-            alb_score = structured_pattern_score(chosen, single_prob, pair_freq)
+            red_score = structured_pattern_score(chosen, single_prob, pair_freq)
 
-            final_score = combo_score * (1 + nb_score) * (1 + gb_pred / 60.0) * (1 + markov_score) * (1 + alb_score)
+            final_score = combo_score * (1 + nb_score) * (1 + gb_pred / 60.0) * (1 + markov_score) * (1 + red_score)
 
             if final_score > best_score:
                 best_score = final_score
