@@ -73,8 +73,18 @@ def markov_chain(df):
     transition_probs = np.divide(transitions, row_sums, out=np.zeros_like(transitions), where=row_sums!=0)
     return transition_probs
 
-# --- generate_predictions fonksiyonu ---
-def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, n_preds=1, trials=5000):
+# --- Yeni Matematiksel Formül Skoru ---
+def custom_formula_score(combo, single_prob, pair_freq):
+    # Skor = Π(P(n_i)) * Π(F(n_i, n_j))
+    prod_single = np.prod([single_prob[n] for n in combo])
+    prod_pair = 1.0
+    for a, b in combinations(combo, 2):
+        freq_ab = pair_freq.at[a, b]
+        prod_pair *= freq_ab if freq_ab > 0 else 1e-6
+    return prod_single * prod_pair
+
+# --- Tahmin Üret ---
+def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, n_preds=1, trials=5000):
     predictions = []
     numbers_list = list(range(1, 61))
     single_probs_list = single_prob.values
@@ -88,20 +98,34 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
             if not check_constraints(chosen):
                 continue
 
+            # Kombine skorlama (frekans & koşul)
             combo_score = 1.0
             for i in range(6):
                 combo_score *= single_prob[chosen[i]]
                 for j in range(i+1, 6):
                     combo_score *= cond_prob.at[chosen[i], chosen[j]]
 
+            # Naive Bayes skoru
             X_test = np.array([[len(df) + 1]])
             classes = nb_model.classes_
             probs = nb_model.predict_proba(X_test)[0]
             nb_score = np.mean([probs[np.where(classes == n)[0][0]] if n in classes else 0 for n in chosen])
+
+            # Gradient Boost skoru
             gb_pred = gb_model.predict(X_test)[0]
+
+            # Markov skoru
             markov_score = np.mean([markov_probs[a].mean() if a < markov_probs.shape[0] else 0 for a in chosen])
 
-            final_score = combo_score * (1 + nb_score) * (1 + gb_pred / 60.0) * (1 + markov_score)
+            # Yeni formül skoru
+            custom_score = custom_formula_score(chosen, single_prob, pair_freq)
+
+            # Nihai skor
+            final_score = (combo_score
+                           * (1 + nb_score)
+                           * (1 + gb_pred / 60.0)
+                           * (1 + markov_score)
+                           * (1 + custom_score))
 
             if final_score > best_score:
                 best_score = final_score
@@ -112,29 +136,11 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
 
     return predictions
 
-# --- Monte Carlo Simülasyonu ---
-def monte_carlo_simulation(predictions, n_simulations=10000):
-    numbers_list = list(range(1, 61))
-    results = []
-    for combo, _ in predictions:
-        counts = {3:0, 4:0, 5:0, 6:0}
-        combo_set = set(combo)
-        for _ in range(n_simulations):
-            draw = set(np.random.choice(numbers_list, size=6, replace=False))
-            matches = len(combo_set.intersection(draw))
-            if matches >= 3:
-                counts[matches] += 1
-        for k in counts:
-            counts[k] /= n_simulations
-        results.append((combo, counts))
-    return results
-
-# --- Streamlit Arayüzü ---
+# --- Streamlit Arayüz ---
 def main():
-    st.title("Süper Loto | Gelişmiş Tahmin Botu v4 + Monte Carlo")
+    st.title("Süper Loto | Gelişmiş Tahmin Botu v6")
 
     uploaded_file = st.file_uploader("CSV dosyanızı yükleyin (Date, Num1~Num6)", type=["csv"])
-
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
         df['Date'] = pd.to_datetime(df['Date'])
@@ -152,19 +158,13 @@ def main():
             markov_probs = markov_chain(df)
 
         n_preds = st.number_input("Kaç tahmin üretmek istiyorsunuz?", min_value=1, max_value=10, value=3, step=1)
-        n_sim = st.number_input("Monte Carlo Simülasyonunda çekiliş sayısı", min_value=1000, max_value=100000, value=10000, step=1000)
 
-        if st.button("Tahminleri Hesapla ve Simüle Et"):
+        if st.button("Tahminleri Hesapla"):
             with st.spinner("Tahminler hesaplanıyor..."):
-                preds = generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, n_preds=n_preds)
-            with st.spinner("Monte Carlo simülasyonu yapılıyor..."):
-                sim_results = monte_carlo_simulation(preds, n_simulations=n_sim)
-
-            st.success("Tahminler ve simülasyon sonuçları hazır!")
-            for i, (combo, counts) in enumerate(sim_results):
-                st.write(f"{i+1}. Tahmin: {', '.join(map(str, combo))}")
-                st.write("Başarı oranları (3/6, 4/6, 5/6, 6/6):")
-                st.write({k: f"%{v*100:.2f}" for k,v in counts.items()})
+                preds = generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, n_preds=n_preds)
+            st.success("Tahminler hazır!")
+            for i, (comb, _) in enumerate(preds):
+                st.write(f"{i+1}. Tahmin: {', '.join(map(str, comb))}")
 
 if __name__ == "__main__":
     main()
