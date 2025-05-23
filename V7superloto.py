@@ -148,7 +148,7 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
 
 # --- Streamlit Arayüz ---
 def main():
-    st.title("Süper Loto | Gelişmiş Tahmin Botu v6 (Albayrak + Markov + Bayes)")
+    st.title("Süper Loto | Gelişmiş Tahmin Botu v7")
 
     uploaded_file = st.file_uploader("CSV dosyanızı yükleyin (Date, Num1~Num6)", type=["csv"])
     if uploaded_file is not None:
