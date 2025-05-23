@@ -152,7 +152,6 @@ def main():
                 preds = generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, n_preds=n_preds)
             st.success("Tahminler hazır!")
             for i, (comb, score) in enumerate(preds):
-                st.write(f"{i+1}. Tahmin: {', '.join(map(str, comb))} | Skor: {score:.4e}")
-
+                st.write(f"{i+1}. Tahmin: {', '.join(map(str, comb))}")
 if __name__ == "__main__":
     main()
