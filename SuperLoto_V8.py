@@ -7,7 +7,7 @@ from datetime import datetime
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.naive_bayes import GaussianNB
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import Dense, Input
 
 # --- Yardımcı Fonksiyonlar ---
 def get_weights(dates):
@@ -120,12 +120,13 @@ def prepare_nn_data(df):
 
 def train_nn_model(X, y):
     model = Sequential([
-        Dense(128, activation='relu', input_dim=60),
+        Input(shape=(60,)),
+        Dense(128, activation='relu'),
         Dense(128, activation='relu'),
         Dense(60, activation='sigmoid')
     ])
     model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-    model.fit(X, y, epochs=100, verbose=0)
+    model.fit(X, y, epochs=100, verbose=1)
     return model
 
 # --- Tahmin Üret ---
