@@ -1,13 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import math
 from itertools import combinations
-from datetime import datetime
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.naive_bayes import GaussianNB
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Input
 
 # --- Yardımcı Fonksiyonlar ---
 def get_weights(dates):
@@ -15,14 +11,6 @@ def get_weights(dates):
     days_ago = (dates.max() - dates).dt.days
     max_days = days_ago.max() + 1
     return (max_days - days_ago) / max_days
-
-def check_constraints(numbers):
-    odd_count = sum(n % 2 == 1 for n in numbers)
-    even_count = len(numbers) - odd_count
-    return odd_count >= 2 and even_count >= 2
-
-def super_loto_probability(combo_score, total_combinations=math.comb(60, 6)):
-    return combo_score / total_combinations
 
 # --- Olasılık Hesaplamaları ---
 def weighted_single_probabilities(df):
@@ -52,7 +40,7 @@ def conditional_probabilities(single_prob, pair_freq):
             cond_prob.loc[a] = pair_freq.loc[a] / single_prob[a]
     return cond_prob
 
-# --- Red Modeli: Model Uygunluğu ---
+# --- Model Uygunluğu (Pattern Skoru) ---
 def model_pattern_score(combo):
     ranges = {"0s": 0, "10s": 0, "20s": 0, "30s": 0, "40s": 0, "50s": 0}
     for n in combo:
@@ -68,6 +56,7 @@ def model_pattern_score(combo):
             ranges["40s"] += 1
         else:
             ranges["50s"] += 1
+
     pattern = [ranges[k] for k in ["0s", "10s", "20s", "30s", "40s", "50s"]]
     return 1.0 if pattern == [1, 1, 1, 2, 1, 0] else 0.1
 
@@ -92,7 +81,7 @@ def markov_chain(df):
     row_sums = transitions.sum(axis=1, keepdims=True)
     return np.divide(transitions, row_sums, out=np.zeros_like(transitions), where=row_sums!=0)
 
-# --- Naive Bayes ---
+# --- Naive Bayes ve Gradient Boosting Eğitim ---
 def train_naive_bayes(df):
     X = np.repeat(df.index.values.reshape(-1, 1), 6, axis=0)
     y = np.array([n for row in df['Numbers'] for n in row])
@@ -100,7 +89,6 @@ def train_naive_bayes(df):
     model.fit(X, y)
     return model
 
-# --- Gradient Boosting ---
 def train_gradient_boost(df):
     X = np.repeat(df.index.values.reshape(-1, 1), 6, axis=0)
     y = np.array([n for row in df['Numbers'] for n in row])
@@ -108,34 +96,11 @@ def train_gradient_boost(df):
     model.fit(X, y)
     return model
 
-# --- Neural Network (MLP) ---
-def prepare_nn_data(df):
-    X, y = [], []
-    for i in range(len(df) - 1):
-        x_vec = [1 if n in df.iloc[i]['Numbers'] else 0 for n in range(1, 61)]
-        y_vec = [1 if n in df.iloc[i + 1]['Numbers'] else 0 for n in range(1, 61)]
-        X.append(x_vec)
-        y.append(y_vec)
-    return np.array(X), np.array(y)
-
-def train_nn_model(X, y):
-    model = Sequential([
-        Input(shape=(60,)),
-        Dense(128, activation='relu'),
-        Dense(128, activation='relu'),
-        Dense(60, activation='sigmoid')
-    ])
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-    model.fit(X, y, epochs=100, verbose=1)
-    return model
-
-# --- Tahmin Üret ---
-def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, nn_model, n_preds=1, trials=50000):
+# --- Tahmin Üretimi ---
+def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, n_preds=1, trials=5000):
     predictions = []
     numbers_list = list(range(1, 61))
     single_probs_list = single_prob.values
-    X_test_nn = np.array([[1 if n in df.iloc[-1]['Numbers'] else 0 for n in range(1, 61)]])
-    nn_probs = nn_model.predict(X_test_nn)[0]
 
     for _ in range(n_preds):
         best_combo = None
@@ -143,8 +108,6 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
         for __ in range(trials):
             chosen = np.random.choice(numbers_list, size=6, replace=False, p=single_probs_list / single_probs_list.sum())
             chosen = np.sort(chosen)
-            if not check_constraints(chosen):
-                continue
 
             combo_score = 1.0
             for i in range(6):
@@ -160,11 +123,8 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
             gb_pred = gb_model.predict(X_test)[0]
             markov_score = np.mean([markov_probs[a].mean() if a < markov_probs.shape[0] else 0 for a in chosen])
             red_score = structured_pattern_score(chosen, single_prob, pair_freq)
-            nn_score = np.mean([nn_probs[n - 1] for n in chosen])
 
-            final_score = super_loto_probability(
-                combo_score * (1 + nb_score) * (1 + gb_pred / 60.0) * (1 + markov_score) * (1 + red_score) * (1 + nn_score)
-            )
+            final_score = combo_score * (1 + nb_score) * (1 + gb_pred / 60.0) * (1 + markov_score) * (1 + red_score)
 
             if final_score > best_score:
                 best_score = final_score
@@ -177,7 +137,8 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
 
 # --- Streamlit Arayüz ---
 def main():
-    st.title("Süper Loto | Gelişmiş Tahmin Botu v8")
+    st.title("Süper Loto | Gelişmiş Tahmin Botu v7 (Kısıtsız)")
+
     uploaded_file = st.file_uploader("CSV dosyanızı yükleyin (Date, Num1~Num6)", type=["csv"])
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
@@ -194,14 +155,12 @@ def main():
             nb_model = train_naive_bayes(df)
             gb_model = train_gradient_boost(df)
             markov_probs = markov_chain(df)
-            X_nn, y_nn = prepare_nn_data(df)
-            nn_model = train_nn_model(X_nn, y_nn)
 
         n_preds = st.number_input("Kaç tahmin üretmek istiyorsunuz?", min_value=1, max_value=10, value=3, step=1)
 
         if st.button("Tahminleri Hesapla"):
             with st.spinner("Tahminler hesaplanıyor..."):
-                preds = generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, nn_model, n_preds=n_preds)
+                preds = generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, n_preds=n_preds)
             st.success("Tahminler hazır!")
             for i, (comb, _) in enumerate(preds):
                 st.write(f"{i+1}. Tahmin: {', '.join(map(str, comb))}")
