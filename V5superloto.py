@@ -171,7 +171,7 @@ def main():
                 prediction = list(map(int, str(row['Prediction']).split(',')))
                 real = list(map(int, str(row['Real Result']).split(',')))
                 known = sorted(set(prediction) & set(real))
-                hits = len(knows)
+                hits = len(known)
                 results.append({
                     "Prediction Number": idx + 1,
                     "Prediction": prediction,
