@@ -97,7 +97,7 @@ def train_gradient_boost(df):
     return model
 
 # --- Tahmin Üretimi ---
-def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, n_preds=1, trials=5000):
+def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, n_preds=1, trials=20000):
     predictions = []
     numbers_list = list(range(1, 61))
     single_probs_list = single_prob.values
