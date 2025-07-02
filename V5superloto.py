@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from itertools import combinations
-from datetime import datetime
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.naive_bayes import GaussianNB
 
@@ -13,12 +12,6 @@ def get_weights(dates):
     max_days = days_ago.max() + 1
     return (max_days - days_ago) / max_days
 
-def check_constraints(numbers):
-    odd_count = sum(n % 2 == 1 for n in numbers)
-    even_count = len(numbers) - odd_count
-    return odd_count >= 2 and even_count >= 2
-
-# --- Olasılık Hesaplamaları ---
 def weighted_single_probabilities(df):
     weights = get_weights(df['Date'])
     total_weight = weights.sum()
@@ -46,7 +39,44 @@ def conditional_probabilities(single_prob, pair_freq):
             cond_prob.loc[a] = pair_freq.loc[a] / single_prob[a]
     return cond_prob
 
-# --- Makine Öğrenimi Modelleri ---
+def model_pattern_score(combo):
+    ranges = {"0s": 0, "10s": 0, "20s": 0, "30s": 0, "40s": 0, "50s": 0}
+    for n in combo:
+        if n < 10:
+            ranges["0s"] += 1
+        elif n < 20:
+            ranges["10s"] += 1
+        elif n < 30:
+            ranges["20s"] += 1
+        elif n < 40:
+            ranges["30s"] += 1
+        elif n < 50:
+            ranges["40s"] += 1
+        else:
+            ranges["50s"] += 1
+    pattern = [ranges[k] for k in ["0s", "10s", "20s", "30s", "40s", "50s"]]
+    return 1.0 if pattern == [1, 1, 1, 2, 1, 0] else 0.1
+
+def structured_pattern_score(combo, single_prob, pair_freq):
+    model_score = model_pattern_score(combo)
+    single_product = np.prod([single_prob[n] for n in combo])
+    pair_product = 1.0
+    for a, b in combinations(combo, 2):
+        f = pair_freq.at[a, b]
+        pair_product *= f if f > 0 else 1e-6
+    return model_score * single_product * pair_product
+
+def markov_chain(df):
+    transitions = np.zeros((61, 61))
+    for i in range(1, len(df)):
+        prev = df.iloc[i - 1]['Numbers']
+        curr = df.iloc[i]['Numbers']
+        for a in prev:
+            for b in curr:
+                transitions[a][b] += 1
+    row_sums = transitions.sum(axis=1, keepdims=True)
+    return np.divide(transitions, row_sums, out=np.zeros_like(transitions), where=row_sums!=0)
+
 def train_naive_bayes(df):
     X = np.repeat(df.index.values.reshape(-1, 1), 6, axis=0)
     y = np.array([n for row in df['Numbers'] for n in row])
@@ -61,20 +91,7 @@ def train_gradient_boost(df):
     model.fit(X, y)
     return model
 
-def markov_chain(df):
-    transitions = np.zeros((61, 61))
-    for i in range(1, len(df)):
-        prev = df.iloc[i - 1]['Numbers']
-        curr = df.iloc[i]['Numbers']
-        for a in prev:
-            for b in curr:
-                transitions[a][b] += 1
-    row_sums = transitions.sum(axis=1, keepdims=True)
-    transition_probs = np.divide(transitions, row_sums, out=np.zeros_like(transitions), where=row_sums!=0)
-    return transition_probs
-
-# --- generate_predictions fonksiyonu ---
-def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, n_preds=1, trials=5000):
+def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, n_preds=1, trials=20000):
     predictions = []
     numbers_list = list(range(1, 61))
     single_probs_list = single_prob.values
@@ -85,8 +102,6 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
         for __ in range(trials):
             chosen = np.random.choice(numbers_list, size=6, replace=False, p=single_probs_list / single_probs_list.sum())
             chosen = np.sort(chosen)
-            if not check_constraints(chosen):
-                continue
 
             combo_score = 1.0
             for i in range(6):
@@ -98,10 +113,12 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
             classes = nb_model.classes_
             probs = nb_model.predict_proba(X_test)[0]
             nb_score = np.mean([probs[np.where(classes == n)[0][0]] if n in classes else 0 for n in chosen])
+
             gb_pred = gb_model.predict(X_test)[0]
             markov_score = np.mean([markov_probs[a].mean() if a < markov_probs.shape[0] else 0 for a in chosen])
+            red_score = structured_pattern_score(chosen, single_prob, pair_freq)
 
-            final_score = combo_score * (1 + nb_score) * (1 + gb_pred / 60.0) * (1 + markov_score)
+            final_score = combo_score * (1 + nb_score) * (1 + gb_pred / 60.0) * (1 + markov_score) * (1 + red_score)
 
             if final_score > best_score:
                 best_score = final_score
@@ -112,29 +129,11 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
 
     return predictions
 
-# --- Monte Carlo Simülasyonu ---
-def monte_carlo_simulation(predictions, n_simulations=10000):
-    numbers_list = list(range(1, 61))
-    results = []
-    for combo, _ in predictions:
-        counts = {3:0, 4:0, 5:0, 6:0}
-        combo_set = set(combo)
-        for _ in range(n_simulations):
-            draw = set(np.random.choice(numbers_list, size=6, replace=False))
-            matches = len(combo_set.intersection(draw))
-            if matches >= 3:
-                counts[matches] += 1
-        for k in counts:
-            counts[k] /= n_simulations
-        results.append((combo, counts))
-    return results
-
-# --- Streamlit Arayüzü ---
+# --- Streamlit Arayüz ---
 def main():
-    st.title("Süper Loto | Gelişmiş Tahmin Botu v4 + Monte Carlo")
+    st.title("Süper Loto | Gelişmiş Tahmin Botu v7 (Kısıtsız + Karşılaştırmalı)")
 
-    uploaded_file = st.file_uploader("CSV dosyanızı yükleyin (Date, Num1~Num6)", type=["csv"])
-
+    uploaded_file = st.file_uploader("CSV 1: Geçmiş çekiliş verisi (Date, Num1~Num6)", type=["csv"])
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
         df['Date'] = pd.to_datetime(df['Date'])
@@ -143,7 +142,7 @@ def main():
         st.success(f"Veriler yüklendi. Toplam satır: {len(df)}")
         st.write(df)
 
-        with st.spinner("Model eğitiliyor ve olasılıklar hesaplanıyor..."):
+        with st.spinner("Model eğitiliyor..."):
             single_prob = weighted_single_probabilities(df)
             pair_freq = pair_frequencies(df)
             cond_prob = conditional_probabilities(single_prob, pair_freq)
@@ -151,20 +150,45 @@ def main():
             gb_model = train_gradient_boost(df)
             markov_probs = markov_chain(df)
 
-        n_preds = st.number_input("Kaç tahmin üretmek istiyorsunuz?", min_value=1, max_value=10, value=3, step=1)
-        n_sim = st.number_input("Monte Carlo Simülasyonunda çekiliş sayısı", min_value=1000, max_value=100000, value=10000, step=1000)
+        n_preds = st.number_input("Kaç tahmin üretmek istiyorsunuz?", min_value=1, max_value=10, value=3)
+        if st.button("Tahminleri Hesapla"):
+            with st.spinner("Tahminler üretiliyor..."):
+                preds = generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, n_preds=n_preds)
+            st.success("Tahminler hazır!")
+            for i, (comb, _) in enumerate(preds):
+                st.write(f"{i+1}. Tahmin: {', '.join(map(str, comb))}")
 
-        if st.button("Tahminleri Hesapla ve Simüle Et"):
-            with st.spinner("Tahminler hesaplanıyor..."):
-                preds = generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, n_preds=n_preds)
-            with st.spinner("Monte Carlo simülasyonu yapılıyor..."):
-                sim_results = monte_carlo_simulation(preds, n_simulations=n_sim)
+    # --- Tahmin Karşılaştırma ---
+    st.subheader("Tahmin – Gerçek Karşılaştırması")
+    uploaded_compare = st.file_uploader("CSV 2: Tahmin/gerçek karşılaştırma (Tahmin, Gerçek Sonuç)", type=["csv"], key="compare")
 
-            st.success("Tahminler ve simülasyon sonuçları hazır!")
-            for i, (combo, counts) in enumerate(sim_results):
-                st.write(f"{i+1}. Tahmin: {', '.join(map(str, combo))}")
-                st.write("Başarı oranları (3/6, 4/6, 5/6, 6/6):")
-                st.write({k: f"%{v*100:.2f}" for k,v in counts.items()})
+    if uploaded_compare is not None:
+        df_compare = pd.read_csv(uploaded_compare)
+        results = []
+
+        for idx, row in df_compare.iterrows():
+            try:
+                tahmin = list(map(int, str(row['Tahmin']).split(',')))
+                gercek = list(map(int, str(row['Gerçek Sonuç']).split(',')))
+                bildigi = sorted(set(tahmin) & set(gercek))
+                isabet = len(bildigi)
+                results.append({
+                    "Tahmin No": idx + 1,
+                    "Tahmin": tahmin,
+                    "Gerçek Sonuç": gercek,
+                    "Bildiği Sayılar": bildigi,
+                    "İsabet Sayısı": isabet
+                })
+            except Exception as e:
+                st.error(f"{idx+1}. satırda hata: {e}")
+
+        if results:
+            df_results = pd.DataFrame(results)
+            st.success("Karşılaştırma tamamlandı.")
+            st.write(df_results)
+
+            csv_data = df_results.to_csv(index=False).encode('utf-8')
+            st.download_button("Sonuçları CSV olarak indir", csv_data, "karsilastirma_sonuclari.csv", "text/csv")
 
 if __name__ == "__main__":
     main()
