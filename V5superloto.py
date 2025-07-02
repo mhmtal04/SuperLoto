@@ -168,16 +168,16 @@ def main():
 
         for idx, row in df_compare.iterrows():
             try:
-                tahmin = list(map(int, str(row['Tahmin']).split(',')))
-                gercek = list(map(int, str(row['Gerçek Sonuç']).split(',')))
-                bildigi = sorted(set(tahmin) & set(gercek))
-                isabet = len(bildigi)
+                prediction = list(map(int, str(row['Prediction']).split(',')))
+                real = list(map(int, str(row['Real Result']).split(',')))
+                known = sorted(set(prediction) & set(real))
+                hits = len(knows)
                 results.append({
-                    "Tahmin No": idx + 1,
-                    "Tahmin": tahmin,
-                    "Gerçek Sonuç": gercek,
-                    "Bildiği Sayılar": bildigi,
-                    "İsabet Sayısı": isabet
+                    "Prediction Number": idx + 1,
+                    "Prediction": prediction,
+                    "Real Result": real,
+                    "Numbers known": known,
+                    "Number of Hits": hits
                 })
             except Exception as e:
                 st.error(f"{idx+1}. satırda hata: {e}")
