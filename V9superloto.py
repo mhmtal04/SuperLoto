@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from itertools import combinations
-from datetime import datetime
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.naive_bayes import GaussianNB
 
@@ -12,11 +11,6 @@ def get_weights(dates):
     days_ago = (dates.max() - dates).dt.days
     max_days = days_ago.max() + 1
     return (max_days - days_ago) / max_days
-
-def check_constraints(numbers):
-    odd_count = sum(n % 2 == 1 for n in numbers)
-    even_count = len(numbers) - odd_count
-    return odd_count >= 2 and even_count >= 2
 
 # --- Olasılık Hesaplamaları ---
 def weighted_single_probabilities(df):
@@ -46,7 +40,48 @@ def conditional_probabilities(single_prob, pair_freq):
             cond_prob.loc[a] = pair_freq.loc[a] / single_prob[a]
     return cond_prob
 
-# --- Makine Öğrenimi Modelleri ---
+# --- Model Uygunluğu (Pattern Skoru) ---
+def model_pattern_score(combo):
+    ranges = {"0s": 0, "10s": 0, "20s": 0, "30s": 0, "40s": 0, "50s": 0}
+    for n in combo:
+        if n < 10:
+            ranges["0s"] += 1
+        elif n < 20:
+            ranges["10s"] += 1
+        elif n < 30:
+            ranges["20s"] += 1
+        elif n < 40:
+            ranges["30s"] += 1
+        elif n < 50:
+            ranges["40s"] += 1
+        else:
+            ranges["50s"] += 1
+
+    pattern = [ranges[k] for k in ["0s", "10s", "20s", "30s", "40s", "50s"]]
+    return 1.0 if pattern == [1, 1, 1, 2, 1, 0] else 0.1
+
+def structured_pattern_score(combo, single_prob, pair_freq):
+    model_score = model_pattern_score(combo)
+    single_product = np.prod([single_prob[n] for n in combo])
+    pair_product = 1.0
+    for a, b in combinations(combo, 2):
+        f = pair_freq.at[a, b]
+        pair_product *= f if f > 0 else 1e-6
+    return model_score * single_product * pair_product
+
+# --- Markov Zinciri ---
+def markov_chain(df):
+    transitions = np.zeros((61, 61))
+    for i in range(1, len(df)):
+        prev = df.iloc[i - 1]['Numbers']
+        curr = df.iloc[i]['Numbers']
+        for a in prev:
+            for b in curr:
+                transitions[a][b] += 1
+    row_sums = transitions.sum(axis=1, keepdims=True)
+    return np.divide(transitions, row_sums, out=np.zeros_like(transitions), where=row_sums!=0)
+
+# --- Naive Bayes ve Gradient Boosting Eğitim ---
 def train_naive_bayes(df):
     X = np.repeat(df.index.values.reshape(-1, 1), 6, axis=0)
     y = np.array([n for row in df['Numbers'] for n in row])
@@ -61,30 +96,8 @@ def train_gradient_boost(df):
     model.fit(X, y)
     return model
 
-def markov_chain(df):
-    transitions = np.zeros((61, 61))
-    for i in range(1, len(df)):
-        prev = df.iloc[i - 1]['Numbers']
-        curr = df.iloc[i]['Numbers']
-        for a in prev:
-            for b in curr:
-                transitions[a][b] += 1
-    row_sums = transitions.sum(axis=1, keepdims=True)
-    transition_probs = np.divide(transitions, row_sums, out=np.zeros_like(transitions), where=row_sums!=0)
-    return transition_probs
-
-# --- Yeni Matematiksel Formül Skoru ---
-def custom_formula_score(combo, single_prob, pair_freq):
-    # Skor = Π(P(n_i)) * Π(F(n_i, n_j))
-    prod_single = np.prod([single_prob[n] for n in combo])
-    prod_pair = 1.0
-    for a, b in combinations(combo, 2):
-        freq_ab = pair_freq.at[a, b]
-        prod_pair *= freq_ab if freq_ab > 0 else 1e-6
-    return prod_single * prod_pair
-
-# --- Tahmin Üret ---
-def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, n_preds=1, trials=5000):
+# --- Tahmin Üretimi ---
+def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, n_preds=1, trials=20000):
     predictions = []
     numbers_list = list(range(1, 61))
     single_probs_list = single_prob.values
@@ -95,37 +108,23 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
         for __ in range(trials):
             chosen = np.random.choice(numbers_list, size=6, replace=False, p=single_probs_list / single_probs_list.sum())
             chosen = np.sort(chosen)
-            if not check_constraints(chosen):
-                continue
 
-            # Kombine skorlama (frekans & koşul)
             combo_score = 1.0
             for i in range(6):
                 combo_score *= single_prob[chosen[i]]
                 for j in range(i+1, 6):
                     combo_score *= cond_prob.at[chosen[i], chosen[j]]
 
-            # Naive Bayes skoru
             X_test = np.array([[len(df) + 1]])
             classes = nb_model.classes_
             probs = nb_model.predict_proba(X_test)[0]
             nb_score = np.mean([probs[np.where(classes == n)[0][0]] if n in classes else 0 for n in chosen])
 
-            # Gradient Boost skoru
             gb_pred = gb_model.predict(X_test)[0]
-
-            # Markov skoru
             markov_score = np.mean([markov_probs[a].mean() if a < markov_probs.shape[0] else 0 for a in chosen])
+            red_score = structured_pattern_score(chosen, single_prob, pair_freq)
 
-            # Yeni formül skoru
-            custom_score = custom_formula_score(chosen, single_prob, pair_freq)
-
-            # Nihai skor
-            final_score = (combo_score
-                           * (1 + nb_score)
-                           * (1 + gb_pred / 60.0)
-                           * (1 + markov_score)
-                           * (1 + custom_score))
+            final_score = combo_score * (1 + nb_score) * (1 + gb_pred / 60.0) * (1 + markov_score) * (1 + red_score)
 
             if final_score > best_score:
                 best_score = final_score
@@ -138,7 +137,7 @@ def generate_predictions(df, single_prob, cond_prob, nb_model, gb_model, markov_
 
 # --- Streamlit Arayüz ---
 def main():
-    st.title("Süper Loto | Gelişmiş Tahmin Botu v6")
+    st.title("Süper Loto | Gelişmiş Tahmin Botu v7 (Kısıtsız)")
 
     uploaded_file = st.file_uploader("CSV dosyanızı yükleyin (Date, Num1~Num6)", type=["csv"])
     if uploaded_file is not None:
