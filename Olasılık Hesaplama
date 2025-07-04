@@ -1,41 +1,56 @@
-def get_weights(dates):
-    dates = pd.to_datetime(dates)
-    days_ago = (dates.max() - dates).dt.days
-    max_days = days_ago.max() + 1
-    return (max_days - days_ago) / max_days
+def weighted_sample_tf(probs, n_samples):
+    probs = tf.convert_to_tensor(probs, dtype=tf.float32)
+    probs /= tf.reduce_sum(probs)
+    samples = tf.random.categorical(tf.math.log([probs]), n_samples)
+    return tf.squeeze(samples)
 
-def weighted_single_probabilities(df):
-    weights = get_weights(df['Date'])
-    total_weight = weights.sum()
-    freq = pd.Series(0, index=range(1,61), dtype=float)
-    for idx, row in df.iterrows():
-        for n in row['Numbers']:
-            freq[n] += weights[idx]
-    return freq / total_weight
+def compute_score_tf(combos, single_prob, cond_prob):
+    # combos: [batch,6], single_prob ve cond_prob numpy dizisi
+    single_prob_tf = tf.constant(single_prob.values, dtype=tf.float32)
+    cond_prob_tf = tf.constant(cond_prob.values, dtype=tf.float32)
+    batch_size = combos.shape[0]
 
-def pair_frequencies(df):
-    weights = get_weights(df['Date'])
-    pair_freq = pd.DataFrame(0, index=range(1,61), columns=range(1,61), dtype=float)
-    for idx, row in df.iterrows():
-        for a,b in combinations(row['Numbers'], 2):
-            pair_freq.at[a,b] += weights[idx]
-            pair_freq.at[b,a] += weights[idx]
-    return pair_freq
+    # Tekil sayı olasılıkları
+    sp_vals = tf.gather(single_prob_tf, combos - 1, axis=0)  # [batch,6]
 
-def conditional_probabilities(single_prob, pair_freq):
-    cond_prob = pd.DataFrame(0, index=range(1,61), columns=range(1,61), dtype=float)
-    for a in range(1,61):
-        if single_prob[a] > 0:
-            cond_prob.loc[a] = pair_freq.loc[a] / single_prob[a]
-    return cond_prob
+    # İkili koşullu olasılıkların çarpımı
+    cp_product = tf.ones(shape=(batch_size,), dtype=tf.float32)
+    for i in range(6):
+        for j in range(i+1,6):
+            a = combos[:,i] - 1
+            b = combos[:,j] - 1
+            cond_vals = tf.gather_nd(cond_prob_tf, tf.stack([a,b], axis=1))
+            cp_product *= cond_vals
 
-def markov_chain(df):
-    transitions = np.zeros((61,61))
-    for i in range(1,len(df)):
-        prev = df.iloc[i-1]['Numbers']
-        curr = df.iloc[i]['Numbers']
-        for a in prev:
-            for b in curr:
-                transitions[a][b] += 1
-    row_sums = transitions.sum(axis=1, keepdims=True)
-    return np.divide(transitions, row_sums, out=np.zeros_like(transitions), where=row_sums!=0)
+    # Toplam skor
+    score = tf.reduce_prod(sp_vals, axis=1) * cp_product
+    return score.numpy()
+
+def generate_predictions_tf(n_preds, trials_per_pred, single_prob, cond_prob):
+    numbers = np.arange(1,61)
+    results = []
+
+    for pred_i in range(n_preds):
+        best_score = -1
+        best_combo = None
+
+        batch_size = 10000  # Partiler halinde dene (bellek için)
+        iterations = trials_per_pred // batch_size
+
+        for _ in range(iterations):
+            batch_samples = []
+            for _ in range(batch_size):
+                sampled = np.random.choice(numbers, 6, replace=False, p=single_prob.values / single_prob.values.sum())
+                batch_samples.append(np.sort(sampled))
+            combos = np.array(batch_samples)
+
+            scores = compute_score_tf(combos, single_prob, cond_prob)
+
+            max_idx = np.argmax(scores)
+            if scores[max_idx] > best_score:
+                best_score = scores[max_idx]
+                best_combo = combos[max_idx]
+
+        results.append((best_combo, best_score))
+
+    return results
