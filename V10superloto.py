@@ -140,15 +140,17 @@ def generate_predictions_vectorized(df, single_prob, cond_prob, nb_model, gb_mod
 
 # --- Streamlit Arayüzü ---
 def main():
-    st.title("🎯 Süper Loto | Vektörleştirilmiş Gelişmiş Bot")
+    st.title("🧠 Süper Loto | Hızlı Vektörleştirilmiş Tahmin Botu (v9)")
 
-    uploaded_file = st.file_uploader("📁 Geçmiş çekiliş verisini yükle (Date, Num1~Num6)", type=["csv"])
+    uploaded_file = st.file_uploader("📁 Çekiliş CSV dosyasını yükle (Date, Num1~Num6)", type=["csv"])
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
         df['Date'] = pd.to_datetime(df['Date'])
         df['Numbers'] = df[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']].values.tolist()
 
-        with st.spinner("📊 Modeller eğitiliyor..."):
+        st.success(f"✅ Veri yüklendi. Toplam çekiliş sayısı: {len(df)}")
+
+        with st.spinner("⏳ Model eğitiliyor..."):
             single_prob = weighted_single_probabilities(df)
             pair_freq = pair_frequencies(df)
             cond_prob = conditional_probabilities(single_prob, pair_freq)
@@ -156,16 +158,16 @@ def main():
             gb_model = train_gradient_boost(df)
             markov_probs = markov_chain(df)
 
-        n_preds = st.number_input("🔢 Üretilecek tahmin sayısı:", min_value=1, max_value=10, value=3)
+        n_preds = st.number_input("🎲 Kaç tahmin üretilsin?", 1, 10, 3)
+        trials = st.number_input("🎰 Kaç kombinasyon denensin? (varsayılan 500,000)", 10000, 5000000, 500000)
 
-        if st.button("🚀 Tahminleri Üret"):
-            with st.spinner("🎰 En güçlü tahminler aranıyor..."):
-                preds = generate_predictions_vectorized(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, n_preds=n_preds)
-
-            st.success("🎉 Tahminler hazır!")
-            for i, (combo, score) in enumerate(preds):
-                st.write(f"{i+1}. Tahmin: {', '.join(map(str, combo))}")
-                st.caption(f"🔢 Skor: {score:.2e}")
+        if st.button("🚀 Tahminleri Başlat"):
+            with st.spinner("🔍 En iyi kombinasyonlar aranıyor..."):
+                results = generate_predictions_vectorized(df, single_prob, cond_prob, nb_model, gb_model,
+                                                          markov_probs, pair_freq, n_preds=n_preds, trials=trials)
+            st.success("🎉 Tahminler tamamlandı!")
+            for i, (combo, score) in enumerate(results):
+                st.write(f"{i+1}. Tahmin: {', '.join(map(str, combo))} | Skor: {score:.2e}")
 
 if __name__ == "__main__":
     main()
