@@ -170,5 +170,5 @@ def main():
             st.success("🎉 Tahminler hazır!")
 
             for i, (combo, score, theo, adv) in enumerate(preds):
-                st.write(f"{i+1}. Tahmin: {', '.join(map(str, combo))}")
-                st.caption(f"🔢 Model Skoru: {score:.2e} | 🎯 Teorik Olasılık: 1 / {int(1/theo)} |
+    st.write(f"{i+1}. Tahmin: {', '.join(map(str, combo))}")
+    st.caption(f"🔢 Model Skoru: {score:.2e} | 🎯 Teorik Olasılık: 1 / {int(1/theo)} | 📈 Avantaj: {adv:.1f} kat")
