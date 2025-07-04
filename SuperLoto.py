@@ -1,108 +1,174 @@
-import yfinance as yf
+import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error
-import streamlit as st
-import datetime
-import os
+from itertools import combinations
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.naive_bayes import GaussianNB
 
-st.set_page_config(page_title="Hisse Tahmin Uygulaması", layout="centered")
-st.title("📈 Yarınki Fiyat ve Yüzde Tahmini (BIST Destekli)")
+# --- Yardımcı Fonksiyonlar ---
 
-symbol_input = st.text_input("Hisse kodunu girin (örnek: THYAO veya ALTINS1)", "")
-symbol_raw = symbol_input.strip().upper()
+def get_weights(dates):
+    dates = pd.to_datetime(dates)
+    days_ago = (dates.max() - dates).dt.days
+    max_days = days_ago.max() + 1
+    return (max_days - days_ago) / max_days
 
-# Tarih aralığı seçimi
-col1, col2 = st.columns(2)
-with col1:
-    start_date = st.date_input("Başlangıç tarihi", datetime.date.today() - datetime.timedelta(days=180))
-with col2:
-    end_date = st.date_input("Bitiş tarihi", datetime.date.today() + datetime.timedelta(days=1))
+def weighted_single_probabilities(df):
+    weights = get_weights(df['Date'])
+    total_weight = weights.sum()
+    freq = pd.Series(0, index=range(1, 61), dtype=float)
+    for idx, row in df.iterrows():
+        for n in row['Numbers']:
+            freq[n] += weights[idx]
+    return freq / total_weight
 
-if symbol_raw:
-    symbol = symbol_raw + ".IS"
-    st.write(f"Veri yükleniyor: **{symbol_raw}**")
+def pair_frequencies(df):
+    weights = get_weights(df['Date'])
+    pair_freq = pd.DataFrame(0, index=range(1, 61), columns=range(1, 61), dtype=float)
+    for idx, row in df.iterrows():
+        for a, b in combinations(row['Numbers'], 2):
+            pair_freq.at[a, b] += weights[idx]
+            pair_freq.at[b, a] += weights[idx]
+    return pair_freq
 
-    # 1. Öncelikle Yahoo Finance'ten veri çekmeye çalış
-    try:
-        data = yf.download(symbol, start=start_date, end=end_date)
-        if data.empty:
-            raise ValueError("Yahoo verisi boş")
+def conditional_probabilities(single_prob, pair_freq):
+    cond_prob = pd.DataFrame(0, index=range(1, 61), columns=range(1, 61), dtype=float)
+    for a in range(1, 61):
+        if single_prob[a] > 0:
+            cond_prob.loc[a] = pair_freq.loc[a] / single_prob[a]
+    return cond_prob
 
-        ticker = yf.Ticker(symbol)
-        current_price = float(ticker.info.get("currentPrice", data["Close"].dropna().iloc[-1]))
-        st.info(f"Gerçek Zamanlı Fiyat (Yahoo): {current_price:.2f} TL")
+def model_pattern_score(combo):
+    ranges = {"0s": 0, "10s": 0, "20s": 0, "30s": 0, "40s": 0, "50s": 0}
+    for n in combo:
+        if n < 10: ranges["0s"] += 1
+        elif n < 20: ranges["10s"] += 1
+        elif n < 30: ranges["20s"] += 1
+        elif n < 40: ranges["30s"] += 1
+        elif n < 50: ranges["40s"] += 1
+        else: ranges["50s"] += 1
+    pattern = [ranges[k] for k in ["0s", "10s", "20s", "30s", "40s", "50s"]]
+    return 1.0 if pattern == [1, 1, 1, 2, 1, 0] else 0.1
 
-    except:
-        st.warning("Yahoo Finance verisi bulunamadı. Yerel CSV dosyasına geçiliyor...")
+def structured_pattern_score(combo, single_prob, pair_freq):
+    model_score = model_pattern_score(combo)
+    single_product = np.prod([single_prob[n] for n in combo])
+    pair_product = 1.0
+    for a, b in combinations(combo, 2):
+        f = pair_freq.at[a, b]
+        pair_product *= f if f > 0 else 1e-6
+    return model_score * single_product * pair_product
 
-        # 2. Yerel CSV dosyasından veriyi oku
-        csv_path = "bist_ornek.csv"
-        if not os.path.exists(csv_path):
-            st.error("Yerel CSV dosyası bulunamadı: bist_ornek.csv")
-            st.stop()
+def markov_chain(df):
+    transitions = np.zeros((61, 61))
+    for i in range(1, len(df)):
+        prev = df.iloc[i - 1]['Numbers']
+        curr = df.iloc[i]['Numbers']
+        for a in prev:
+            for b in curr:
+                transitions[a][b] += 1
+    row_sums = transitions.sum(axis=1, keepdims=True)
+    return np.divide(transitions, row_sums, out=np.zeros_like(transitions), where=row_sums != 0)
 
-        try:
-            df = pd.read_csv(csv_path, encoding="ISO-8859-9", sep=";")
-            df_filtered = df[df["MENKUL KIYMET"] == symbol_raw]
-            if df_filtered.empty:
-                st.error(f"{symbol_raw} için CSV'de veri bulunamadı.")
-                st.stop()
+def train_naive_bayes(df):
+    X = np.repeat(df.index.values.reshape(-1, 1), 6, axis=0)
+    y = np.array([n for row in df['Numbers'] for n in row])
+    model = GaussianNB()
+    model.fit(X, y)
+    return model
 
-            # Basit dataframe oluştur (örnek kolonlara göre)
-            df_filtered["Close"] = df_filtered["KAPANIŞ"].str.replace(",", ".").astype(float)
-            df_filtered["TARIH"] = pd.to_datetime(df_filtered["TARIH"])
-            df_filtered = df_filtered.sort_values("TARIH")
-            df_filtered.set_index("TARIH", inplace=True)
+def train_gradient_boost(df):
+    X = np.repeat(df.index.values.reshape(-1, 1), 6, axis=0)
+    y = np.array([n for row in df['Numbers'] for n in row])
+    model = GradientBoostingRegressor()
+    model.fit(X, y)
+    return model
 
-            current_price = df_filtered["Close"].iloc[-1]
-            st.info(f"Kapanış Fiyatı (CSV): {current_price:.2f} TL")
+# --- Vektörleştirilmiş Tahmin Fonksiyonu ---
 
-            data = df_filtered[["Close"]].copy()
+def generate_predictions_vectorized(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, n_preds=1, trials=500000):
+    predictions = []
+    numbers = np.arange(1, 61)
+    single_probs = single_prob.values
+    single_probs /= single_probs.sum()
 
-        except Exception as e:
-            st.error(f"CSV verisi okunamadı: {e}")
-            st.stop()
+    all_combos = np.array([
+        np.sort(np.random.choice(numbers, size=6, replace=False, p=single_probs))
+        for _ in range(trials)
+    ])
 
-    # Grafik çiz
-    st.line_chart(data["Close"], use_container_width=True)
+    single_scores = np.prod(single_prob[all_combos], axis=1)
 
-    # Özellikleri hazırla
-    data["MA5"] = data["Close"].rolling(window=5).mean()
-    data["MA10"] = data["Close"].rolling(window=10).mean()
-    data["Target"] = data["Close"].shift(-1)  # Yarınki kapanış tahmini için
-    data = data.dropna()
+    pair_scores = np.ones(trials)
+    for i in range(6):
+        for j in range(i + 1, 6):
+            pair_vals = np.array([
+                cond_prob.at[a, b] if cond_prob.at[a, b] > 0 else 1e-6
+                for a, b in zip(all_combos[:, i], all_combos[:, j])
+            ])
+            pair_scores *= pair_vals
 
-    if data.shape[0] < 20:
-        st.warning("Yeterli veri yok. Daha uzun zaman dilimi seçin.")
-    else:
-        features = ["Close", "MA5", "MA10"]
-        X = data[features]
-        y = data["Target"]
+    X_test = np.array([[len(df) + 1]])
+    nb_probs = nb_model.predict_proba(X_test)[0]
+    nb_classes = nb_model.classes_
+    nb_scores = np.mean([
+        [nb_probs[np.where(nb_classes == n)[0][0]] if n in nb_classes else 0 for n in combo]
+        for combo in all_combos
+    ], axis=1)
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-        model = RandomForestRegressor()
-        model.fit(X_train, y_train)
+    gb_pred = gb_model.predict(X_test)[0]
+    markov_scores = np.array([np.mean(markov_probs[combo]) for combo in all_combos])
 
-        preds = model.predict(X_test)
-        mae = mean_absolute_error(y_test, preds)
-        st.success(f"Model Ortalama Hata: ±{mae:.2f} TL")
+    def combo_pattern_score(combo):
+        model_score = model_pattern_score(combo)
+        pair_product = 1.0
+        for a, b in combinations(combo, 2):
+            f = pair_freq.at[a, b]
+            pair_product *= f if f > 0 else 1e-6
+        return model_score * pair_product
 
-        latest_data = X.tail(1)
-        prediction_raw = model.predict(latest_data)[0]
+    pattern_scores = np.array([combo_pattern_score(combo) for combo in all_combos])
 
-        # BIST limitleri: %10 yukarı/aşağı sınır
-        upper_limit = current_price * 1.10
-        lower_limit = current_price * 0.90
-        predicted_price = max(min(prediction_raw, upper_limit), lower_limit)
+    final_scores = single_scores * (1 + nb_scores) * (1 + gb_pred / 60.0) * (1 + markov_scores) * (1 + pattern_scores)
 
-        percent_change = ((predicted_price - current_price) / current_price) * 100
-        percent_change = max(min(percent_change, 10), -10)
+    top_indices = np.argsort(final_scores)[-n_preds:][::-1]
 
-        st.subheader("Tahmin Sonucu:")
-        st.write(f"Yarınki tahmini kapanış fiyatı: **{predicted_price:.2f} TL**")
-        if abs(percent_change) >= 9.9:
-            st.warning(f"Tahmin %10 BIST sınırına ulaştı.")
-        st.write(f"Beklenen değişim: **{percent_change:+.2f}%**")
+    theoretical_odds = 1 / 50063860
+    for idx in top_indices:
+        advantage = final_scores[idx] / theoretical_odds
+        predictions.append((all_combos[idx], final_scores[idx], theoretical_odds, advantage))
+
+    return predictions
+
+# --- Streamlit Uygulaması ---
+
+def main():
+    st.title("🎯 Süper Loto | Gelişmiş Tahmin Botu v9 (Vektörleştirilmiş & Hızlı)")
+
+    uploaded_file = st.file_uploader("📂 CSV dosyanızı yükleyin (Date, Num1~Num6)", type=["csv"])
+    if uploaded_file is not None:
+        df = pd.read_csv(uploaded_file)
+        df['Date'] = pd.to_datetime(df['Date'])
+        df['Numbers'] = df[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']].values.tolist()
+
+        st.success(f"✅ Veriler yüklendi. Toplam çekiliş: {len(df)}")
+
+        with st.spinner("⏳ Modeller eğitiliyor..."):
+            single_prob = weighted_single_probabilities(df)
+            pair_freq = pair_frequencies(df)
+            cond_prob = conditional_probabilities(single_prob, pair_freq)
+            nb_model = train_naive_bayes(df)
+            gb_model = train_gradient_boost(df)
+            markov_probs = markov_chain(df)
+
+        n_preds = st.number_input("🎲 Kaç tahmin üretmek istersiniz?", min_value=1, max_value=10, value=3, step=1)
+        trials = st.number_input("🎰 Kaç kombinasyon denensin? (Varsayılan 500.000)", min_value=10000, max_value=1000000, value=500000, step=10000)
+
+        if st.button("🚀 Tahminleri Hesapla"):
+            with st.spinner("🧠 Tahminler üretiliyor..."):
+                preds = generate_predictions_vectorized(df, single_prob, cond_prob, nb_model, gb_model, markov_probs, pair_freq, n_preds=n_preds, trials=trials)
+            st.success("🎉 Tahminler hazır!")
+
+            for i, (combo, score, theo, adv) in enumerate(preds):
+                st.write(f"{i+1}. Tahmin: {', '.join(map(str, combo))}")
+                st.caption(f"🔢 Model Skoru: {score:.2e} | 🎯 Teorik Olasılık: 1 / {int(1/theo)} |
