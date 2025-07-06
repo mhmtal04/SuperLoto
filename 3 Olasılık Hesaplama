@@ -1,0 +1,56 @@
+def weighted_sample_tf(probs, n_samples):
+    probs = tf.convert_to_tensor(probs, dtype=tf.float32)
+    probs /= tf.reduce_sum(probs)
+    samples = tf.random.categorical(tf.math.log([probs]), n_samples)
+    return tf.squeeze(samples)
+
+def compute_score_tf(combos, single_prob, cond_prob):
+    # combos: [batch,6], single_prob ve cond_prob numpy dizisi
+    single_prob_tf = tf.constant(single_prob.values, dtype=tf.float32)
+    cond_prob_tf = tf.constant(cond_prob.values, dtype=tf.float32)
+    batch_size = combos.shape[0]
+
+    # Tekil sayı olasılıkları
+    sp_vals = tf.gather(single_prob_tf, combos - 1, axis=0)  # [batch,6]
+
+    # İkili koşullu olasılıkların çarpımı
+    cp_product = tf.ones(shape=(batch_size,), dtype=tf.float32)
+    for i in range(6):
+        for j in range(i+1,6):
+            a = combos[:,i] - 1
+            b = combos[:,j] - 1
+            cond_vals = tf.gather_nd(cond_prob_tf, tf.stack([a,b], axis=1))
+            cp_product *= cond_vals
+
+    # Toplam skor
+    score = tf.reduce_prod(sp_vals, axis=1) * cp_product
+    return score.numpy()
+
+def generate_predictions_tf(n_preds, trials_per_pred, single_prob, cond_prob):
+    numbers = np.arange(1,61)
+    results = []
+
+    for pred_i in range(n_preds):
+        best_score = -1
+        best_combo = None
+
+        batch_size = 10000  # Partiler halinde dene (bellek için)
+        iterations = trials_per_pred // batch_size
+
+        for _ in range(iterations):
+            batch_samples = []
+            for _ in range(batch_size):
+                sampled = np.random.choice(numbers, 6, replace=False, p=single_prob.values / single_prob.values.sum())
+                batch_samples.append(np.sort(sampled))
+            combos = np.array(batch_samples)
+
+            scores = compute_score_tf(combos, single_prob, cond_prob)
+
+            max_idx = np.argmax(scores)
+            if scores[max_idx] > best_score:
+                best_score = scores[max_idx]
+                best_combo = combos[max_idx]
+
+        results.append((best_combo, best_score))
+
+    return results
