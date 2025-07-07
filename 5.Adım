@@ -1,40 +1,40 @@
-import tensorflow as tf
-import numpy as np
+from tqdm.notebook import tqdm
 
-def generate_predictions_tf(n_preds, trials, single_prob, cond_prob):
+print("📊 Modeller hazırlanıyor...")
+# single_prob ve cond_prob hazır olduğunu varsayıyoruz
+
+print("🎯 TensorFlow ile tahminler yapılıyor...")
+
+def generate_predictions_tf_progress(n_preds, trials, single_prob, cond_prob):
     numbers = np.arange(1, 61)
-    batch_size = 10000  # Bellek ve hız için ayarlanabilir
+    batch_size = 10000
     iterations = trials // batch_size
 
-    # TensorFlow tensorları olarak olasılıkları hazırla
     single_prob_tf = tf.constant(single_prob.values, dtype=tf.float32)
     cond_prob_tf = tf.constant(cond_prob.values, dtype=tf.float32)
 
     results = []
 
-    for _ in range(n_preds):
+    for pred_i in range(n_preds):
         best_score = -1
         best_combo = None
 
-        for _ in range(iterations):
-            # Toplu örnekleme (batch_size x 6 sayı)
+        # tqdm ilerleme çubuğu burada
+        for _ in tqdm(range(iterations), desc=f"Tahmin {pred_i+1}/{n_preds}"):
             samples = []
             for __ in range(batch_size):
                 sampled = np.random.choice(numbers, size=6, replace=False, p=single_prob.values / single_prob.values.sum())
                 samples.append(np.sort(sampled))
-            combos = tf.constant(np.array(samples) - 1, dtype=tf.int32)  # 0 tabanlı indeks
+            combos = tf.constant(np.array(samples) - 1, dtype=tf.int32)
 
-            # Tekil olasılıkları topla
-            sp_vals = tf.gather(single_prob_tf, combos)  # [batch_size, 6]
-            sp_product = tf.reduce_prod(sp_vals, axis=1)  # [batch_size]
+            sp_vals = tf.gather(single_prob_tf, combos)
+            sp_product = tf.reduce_prod(sp_vals, axis=1)
 
-            # İkili koşullu olasılıkların çarpımı
             cp_product = tf.ones(batch_size, dtype=tf.float32)
-
-            for i in range(6):
-                for j in range(i+1, 6):
-                    idx_a = combos[:, i]
-                    idx_b = combos[:, j]
+            for x in range(6):
+                for y in range(x+1, 6):
+                    idx_a = combos[:, x]
+                    idx_b = combos[:, y]
                     cond_vals = tf.gather_nd(cond_prob_tf, tf.stack([idx_a, idx_b], axis=1))
                     cp_product *= cond_vals
 
@@ -50,4 +50,13 @@ def generate_predictions_tf(n_preds, trials, single_prob, cond_prob):
 
     return results
 
-print("✅ TensorFlow ile tahmin fonksiyonu hazır.")
+# Tahminleri çalıştır
+n_preds = 3
+trials = 100000
+
+results = generate_predictions_tf_progress(n_preds, trials, single_prob, cond_prob)
+
+print("🎉 Tahminler hazır!")
+
+for i, (combo, score) in enumerate(results, 1):
+    print(f"{i}. Tahmin: {combo} | Skor: {score:.5e}")
