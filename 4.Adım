@@ -1,0 +1,53 @@
+import tensorflow as tf
+import numpy as np
+
+def generate_predictions_tf(n_preds, trials, single_prob, cond_prob):
+    numbers = np.arange(1, 61)
+    batch_size = 10000  # Bellek ve hız için ayarlanabilir
+    iterations = trials // batch_size
+
+    # TensorFlow tensorları olarak olasılıkları hazırla
+    single_prob_tf = tf.constant(single_prob.values, dtype=tf.float32)
+    cond_prob_tf = tf.constant(cond_prob.values, dtype=tf.float32)
+
+    results = []
+
+    for _ in range(n_preds):
+        best_score = -1
+        best_combo = None
+
+        for _ in range(iterations):
+            # Toplu örnekleme (batch_size x 6 sayı)
+            samples = []
+            for __ in range(batch_size):
+                sampled = np.random.choice(numbers, size=6, replace=False, p=single_prob.values / single_prob.values.sum())
+                samples.append(np.sort(sampled))
+            combos = tf.constant(np.array(samples) - 1, dtype=tf.int32)  # 0 tabanlı indeks
+
+            # Tekil olasılıkları topla
+            sp_vals = tf.gather(single_prob_tf, combos)  # [batch_size, 6]
+            sp_product = tf.reduce_prod(sp_vals, axis=1)  # [batch_size]
+
+            # İkili koşullu olasılıkların çarpımı
+            cp_product = tf.ones(batch_size, dtype=tf.float32)
+
+            for i in range(6):
+                for j in range(i+1, 6):
+                    idx_a = combos[:, i]
+                    idx_b = combos[:, j]
+                    cond_vals = tf.gather_nd(cond_prob_tf, tf.stack([idx_a, idx_b], axis=1))
+                    cp_product *= cond_vals
+
+            scores = sp_product * cp_product
+            max_idx = tf.argmax(scores).numpy()
+            max_score = scores[max_idx].numpy()
+
+            if max_score > best_score:
+                best_score = max_score
+                best_combo = combos[max_idx].numpy() + 1
+
+        results.append((best_combo, best_score))
+
+    return results
+
+print("✅ TensorFlow ile tahmin fonksiyonu hazır.")
