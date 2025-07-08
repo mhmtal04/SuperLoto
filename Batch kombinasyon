@@ -1,0 +1,162 @@
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from itertools import combinations, islice
+import math
+from google.colab import files
+import io
+from tqdm.notebook import tqdm
+
+# CSV yükleme
+uploaded = files.upload()
+filename = next(iter(uploaded))
+df = pd.read_csv(io.StringIO(uploaded[filename].decode('utf-8')))
+df['Date'] = pd.to_datetime(df['Date'])
+df['Numbers'] = df[['Num1', 'Num2', 'Num3', 'Num4', 'Num5', 'Num6']].values.tolist()
+print(f"Veri yüklendi. Toplam çekiliş: {len(df)}")
+
+3 Adım
+
+def get_weights(dates):
+    days_ago = (dates.max() - dates).dt.days
+    max_days = days_ago.max() + 1
+    return (max_days - days_ago) / max_days
+
+def weighted_single_probabilities(df):
+    weights = get_weights(df['Date'])
+    freq = pd.Series(0, index=range(1, 61), dtype=float)
+    for idx, row in df.iterrows():
+        for n in row['Numbers']:
+            freq[n] += weights[idx]
+    return freq / weights.sum()
+
+def pair_frequencies(df):
+    weights = get_weights(df['Date'])
+    pair_freq = pd.DataFrame(0, index=range(1, 61), columns=range(1, 61), dtype=float)
+    for idx, row in df.iterrows():
+        for a, b in combinations(row['Numbers'], 2):
+            pair_freq.at[a, b] += weights[idx]
+            pair_freq.at[b, a] += weights[idx]
+    return pair_freq
+
+def conditional_probabilities(single_prob, pair_freq):
+    cond_prob = pd.DataFrame(0, index=range(1, 61), columns=range(1, 61), dtype=float)
+    for a in range(1, 61):
+        if single_prob[a] > 0:
+            cond_prob.loc[a] = pair_freq.loc[a] / single_prob[a]
+    return cond_prob
+
+def markov_chain(df):
+    transitions = np.zeros((61, 61))
+    for i in range(1, len(df)):
+        prev = df.iloc[i-1]['Numbers']
+        curr = df.iloc[i]['Numbers']
+        for a in prev:
+            for b in curr:
+                transitions[a][b] += 1
+    row_sums = transitions.sum(axis=1, keepdims=True)
+    return np.divide(transitions, row_sums, out=np.zeros_like(transitions), where=row_sums != 0)
+
+4 Adım
+
+def calculate_red_score(numbers):
+    score = 0
+    numbers = sorted(numbers)
+    bins = [0] * 6
+    for n in numbers:
+        if 1 <= n <= 9: bins[0] += 1
+        elif 10 <= n <= 19: bins[1] += 1
+        elif 20 <= n <= 29: bins[2] += 1
+        elif 30 <= n <= 39: bins[3] += 1
+        elif 40 <= n <= 49: bins[4] += 1
+        elif 50 <= n <= 60: bins[5] += 1
+    ideal_model = [1, 1, 1, 2, 1, 0]
+    if bins != ideal_model:
+        score += 1
+    for i in range(len(numbers) - 1):
+        if numbers[i] + 1 == numbers[i+1]:
+            score += 1
+    return score
+
+def compute_score_tf(combos, single_prob, cond_prob):
+    single_prob_tf = tf.constant(single_prob.values, dtype=tf.float32)
+    cond_prob_tf = tf.constant(cond_prob.values, dtype=tf.float32)
+    sp_vals = tf.gather(single_prob_tf, combos - 1, axis=0)
+    cp_product = tf.ones(shape=(combos.shape[0],), dtype=tf.float32)
+    for i in range(6):
+        for j in range(i+1, 6):
+            a = combos[:, i] - 1
+            b = combos[:, j] - 1
+            cond_vals = tf.gather_nd(cond_prob_tf, tf.stack([a, b], axis=1))
+            cp_product *= cond_vals
+    return tf.reduce_prod(sp_vals, axis=1) * cp_product
+
+5 ADIM 
+
+import heapq
+
+def generate_predictions_tf(n_preds, trials_per_pred, single_prob, cond_prob, markov, max_red_score=2, batch_size=10000):
+    from itertools import combinations, islice
+
+    def batched_combinations(iterable, r, batch_size):
+        pool = list(iterable)
+        combo_gen = combinations(pool, r)
+        while True:
+            batch = list(islice(combo_gen, batch_size))
+            if not batch:
+                break
+            yield batch
+
+    numbers = range(1, 61)
+    r = 6
+    total_combinations = math.comb(60, 6)
+
+    top_results = []
+
+    # Kaç kombinasyon işlenecekse, onu sınırla
+    trials = min(trials_per_pred, total_combinations)
+
+    for batch in tqdm(batched_combinations(numbers, r, batch_size), total=math.ceil(trials / batch_size)):
+        if trials <= 0:
+            break
+
+        combos = np.array(batch)
+        if len(combos) == 0:
+            continue
+
+        scores = compute_score_tf(combos, single_prob, cond_prob).numpy()
+
+        for combo, score in zip(combos, scores):
+            if trials <= 0:
+                break
+            red = calculate_red_score(combo)
+            if red <= max_red_score:
+                heapq.heappush(top_results, (score, combo.tolist(), red))
+                if len(top_results) > n_preds * 10:
+                    heapq.heappop(top_results)
+            trials -= 1
+
+    top_results = sorted(top_results, key=lambda x: -x[0])[:n_preds]
+    return [(combo, score, red) for score, combo, red in top_results]
+
+6 Adım
+
+print("Modeller hesaplanıyor...")
+single_prob = weighted_single_probabilities(df)
+pair_freq = pair_frequencies(df)
+cond_prob = conditional_probabilities(single_prob, pair_freq)
+markov = markov_chain(df)
+
+print("Tahminler oluşturuluyor...")
+predictions = generate_predictions_tf(
+    n_preds=3,
+    trials_per_pred=50063860,
+    single_prob=single_prob,
+    cond_prob=cond_prob,
+    markov=markov,
+    max_red_score=2
+)
+
+print("\n--- SONUÇLAR ---")
+for i, (combo, score, red_score) in enumerate(predictions):
+    print(f"{i+1}. Tahmin: {combo} | Skor: {score:.5e} | Red Score: {red_score}")
